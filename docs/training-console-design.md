@@ -1,6 +1,8 @@
-# roboVLA Training Console — Design Specification (v0.3)
+# roboVLA Training Console — Design Specification (v0.4)
 
 A web-based, OpenVLA-specific training control plane for a class of up to 12 individual students (currently 9), each with their own robot. Hosted on the campus LAN. Drafted from a live inspection of `pai1` on 2026-10-20; v0.3 finalized 2026-10-20 as the implementation-ready spec.
+
+**v0.4 (2026-10-20):** Launch fleet = **pai1 only** (single trainer, 2 inference slots); the 5090 Ti / 4070 Ti / home 8060S are verified inventory and disabled config entries that join later purely via the admin node page — no code, no redeploy. **Node selection at submit**: student picks (teacher-gated `student_selectable`), teacher assigns/pins, or auto first-fit.
 
 **v0.3 (2026-10-20) — implementation-ready.** Added: §8 Admin controls (complete taxonomy; every admin action is a gated REST endpoint) · §9 Full API schema (REST + SSE + security model) · §10 Portability & scalability (fleet-as-config, runner abstraction, deployment, scaling path, operational durability) · §11 TDD & DRY (pure core, single JobSpec contract, binding DRY rules, test matrix) · Appendices A–C (default `fleet.yaml`, JobSpec JSON, repo layout for the implementing coder).
 
@@ -16,7 +18,9 @@ A web-based, OpenVLA-specific training control plane for a class of up to 12 ind
 | **Home dev box** (Strix Halo, 128 GB unified) | 8060S iGPU (~7.4 TF FP32-class, ~15 TF bf16, 256 GB/s) | Development + integration runner (off-campus) | **bf16 LoRA, no quantization** — 20–25 GB total fits the 128 GB pool, which sidesteps bnb-on-ROCm entirely; ~3–4 h/epoch → overnight runs | bf16 inference testing (~1–3 s/action) | ROCm gfx1151 (RDNA 3.5); `HSA_OVERRIDE_GFX_VERSION=11.0.0` fallback; verify with `home_selftest` (30-min checklist). |
 | ~~GTX 1070 (8 GB) on home box~~ | — | **Excluded** | — | — | 8 GB < floor for 7.5B even 4-bit-QLoRA (borderline OOM); no tensor cores; Pascal sm_61 deprecated (CUDA 12.8) / removed (CUDA 13). |
 
-**Campus inference concurrency target: 5 slots** (2 + 2 + 1) → see §7.7 for the 12-robot demo relay.
+**Launch fleet (current): pai1 only** — one trainer, 2 inference slots. Rows 2–4 (5090 Ti, 4070 Ti, home 8060S) are verified inventory and planned fleet entries: `enabled: false` in `fleet.yaml` until they come online, and they join purely via the admin node registry (§8.2: add → probe → enable) — no code change, no redeploy. With a single trainer at launch, full runs are batched to the morning + overnight release windows (lesson-plan rhythm).
+
+**Campus inference concurrency: 2 slots at launch** (pai1) → 5 slots once node 2/3 join → see §7.7 for the 12-robot demo relay.
 
 ## 2. What the system is
 
@@ -60,7 +64,8 @@ Per-runner tenancy (same table as v0.1, per node): assistant 27B ~29.5 GB (pai1 
  /home/adam/robovla/{venv, openvla, datasets, runs, artifacts}   (same layout per node)
         │
         ▼
- campus GPUs: pai1 5090 (2 train / 2 infer) · 5090 Ti (2 / 2) · 4070 Ti (1 / 1)
+ campus GPUs (launch = pai1 only): pai1 5090 (1 train slot / 2 infer)
+ · node2 / node3 joined later via the admin page (§8.2) — config only
 ```
 
 **Why FastAPI + SSE + vanilla JS/HTMX (not Streamlit/Gradio):** 12 concurrent long-lived live dashboards, real per-user auth, no per-interaction rerun model, ~1.5–2k LOC, and students can read the whole codebase. LAN-only: no tunnel, no public exposure; auth + rate limits still apply (students are students).
@@ -96,12 +101,12 @@ Per-runner tenancy (same table as v0.1, per node): assistant 27B ~29.5 GB (pai1 
 
 1. **Dashboard** — queue position + ETA, my datasets, my runs, per-node GPU state (who holds it, VRAM), class activity feed.
 2. **Datasets** — upload wizard → prep job → QA report, versioning, norm stats display, held-out info, "ready" badge.
-3. **New run** — dataset (ready only), task prompt template, rank/α/lr/epochs/aug/seed in a collapsible *advanced* section (values drawn from the single preset catalog in core), **required experiment ticket** (hypothesis → config → prediction; outcome at completion), submit → smoke → train.
+3. **New run** — dataset (ready only), task prompt template, **training node** (default *auto* = first-fit scheduler; or a specific node when the teacher has marked it student-selectable, §8.2; the teacher can assign/pin any node via requeue), rank/α/lr/epochs/aug/seed in a collapsible *advanced* section (values drawn from the single preset catalog in core), **required experiment ticket** (hypothesis → config → prediction; outcome at completion), submit → smoke → train.
 4. **Run detail (SSE)** — train + held-out val sparklines, step/total/ETA, grad norm, LR, VRAM + util, checkpoint events, raw log (collapsible), kill (teacher).
 5. **Class board** — all 12 side-by-side (best held-out accuracy, run counts, dataset stats, tickets); printable; the final-week post-mortem material.
 6. **Artifacts** — adapter download, merged export (on demand), run config JSON.
 7. **Inference slots** — "serve my adapter" (8-bit), slot queue, live status, **Pi connection info** (endpoint + per-student token).
-   **7.7 Demo-day relay (12 robots, 5 slots):** students are scheduled into ~4-min arena runs; runs pipeline with presentations — student *i* presents their run's result while student *i+1's* robot executes on a slot. 9 students × (4-min run + 3-min talk + 2-min Q&A) ≈ 45–55 min total with all 5 slots busy. The slot board is visible to the class. For practice weeks, the same relay gives every student 30–60 s of autonomy back-to-back — "everyone's robot is always moving."
+   **7.7 Demo-day relay (12 robots, 2 slots at launch; 5 after node2/3 join):** students are scheduled into ~4-min arena runs; runs pipeline with presentations — student *i* presents their run's result while student *i+1's* robot executes on a slot. 9–12 students × (4-min run + 3-min talk + 2-min Q&A) ≈ 55–90 min total; robot slot demand is only ~4 min/student (≤ 48 robot-minutes), which 2 slots absorb comfortably inside the presentation timeline. The slot board is visible to the class. For practice weeks, the same relay gives every student 30–60 s of autonomy back-to-back — "everyone's robot is always moving."
 8. **Teacher panel** — thin forms over the admin API (§9.7): runner registry (enable, slots, batch preset, VRAM budget, priority, SSH target), queue ops, ninfer release windows + "release now" (assistant-offline warning), student accounts, disk usage, raw logs. Complete taxonomy in §8; every panel control is an audited endpoint.
 
 ## 8. Admin controls
@@ -127,7 +132,7 @@ The node registry **is** the fleet config (§10, `fleet.yaml`) — the admin UI 
 
 | Control | Behavior |
 |---|---|
-| Add node | form: id, label, runner (`local` \| `ssh target`), LAN IP, GPU VRAM, train slots (1–2), infer slots (1–2), quant profile (`bnb8` \| `bf16`), batch preset (1 \| 4 \| 8 + matching grad-accum), VRAM budget per job type, priority (int, default 0), enabled (default **off**) → **dry-run join probe** (ssh reachability, `nvidia-smi`, disk free ≥ 50 GB, model dir present) → node stays disabled until teacher enables it |
+| Add node | form: id, label, runner (`local` \| `ssh target`), LAN IP, GPU VRAM, train slots (1–2), infer slots (1–2), quant profile (`bnb8` \| `bf16`), batch preset (1 \| 4 \| 8 + matching grad-accum), VRAM budget per job type, priority (int, default 0), student-selectable (default **off**), enabled (default **off**) → **dry-run join probe** (ssh reachability, `nvidia-smi`, disk free ≥ 50 GB, model dir present) → node stays disabled until teacher enables it |
 | Edit node | any field; changes apply at the next scheduling tick; active jobs unaffected (a budget shrinking below a running job completes that job; no new admissions on that node until refit) |
 | Enable / disable | disable: queued jobs requeue to other fitting runners; running jobs fail-fast with checkpoint-resume hint; inference slots drain with client notification (Pi watchdog stops the robot after lease expiry) |
 | Remove node | as disable, then removed from config; its jobs/artifacts remain on disk, flagged |
@@ -135,6 +140,7 @@ The node registry **is** the fleet config (§10, `fleet.yaml`) — the admin UI 
 | GPU reset / VRAM purge | `nvidia-smi --gpu-reset` (confirmation required, no running jobs) · zombie purge: post-job probe lists orphan PIDs holding VRAM → teacher confirms → kill (audit-logged) |
 | Service ops | restart `robovla-console` on that node (ssh nodes), tail service log (last 500 lines) |
 | Endpoint visibility | each node's LAN IP + robot port published on the class board for Pi setup; robots authenticate with per-student tokens, so no per-robot endpoint config is needed |
+| Student-selectable | teacher toggles per node whether students can name that node at run submission (§9.3); off ⇒ auto first-fit or teacher-assign only; `enabled: false` nodes are hidden from students entirely |
 
 ### 8.3 Jobs & queue
 
@@ -192,7 +198,8 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 - `GET /api/datasets/{id}/episodes/{ep}/frames/{i}.jpg` (browser preview)
 
 ### 9.3 Runs
-- `POST /api/runs` `{dataset_id, job_type: smoke|train|validate|merge|infer|crosscheck, config: {rank, alpha, lr, epochs, batch, grad_accum, aug, seed, prompt_template}, run_now?: bool}` → `{job_id, position, eta_s}`
+- `POST /api/runs` `{dataset_id, job_type: smoke|train|validate|merge|infer|crosscheck, node_id?: "auto"|<node-id>, config: {rank, alpha, lr, epochs, batch, grad_accum, aug, seed, prompt_template}, run_now?: bool}` → `{job_id, position, eta_s}`
+  - Node selection: `"auto"` (default) ⇒ scheduler first-fit across enabled nodes; a specific node is accepted for students only if enabled **and** `student_selectable: true` (§8.2) — teacher may name any enabled node; pinned jobs wait on that node only
   - Validation: dataset `ready`; per-student caps; job-type budget fit — if no node fits now, response carries `waiting: "slot"` + earliest ETA
 - `GET /api/runs` (own) · `GET /api/runs/{job_id}` (state, config, node, progress, artifacts)
 - `GET /api/runs/queue` (all nodes, all students; position + ETA; feeds the class board)
@@ -241,7 +248,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 
 **Core principle: hardware lives in config, not code.** The console has no knowledge of "pai1" or "5090" as a machine — a node is an entry in `fleet.yaml` with a hardware profile. Moving the class to a new room, a new school, or a cloud box = a new `fleet.yaml`, same image, same code. (Appendix A: full default config.)
 
-- **Fleet = one YAML file** (`fleet.yaml`, validated against one schema in core): console block (bind, ports, TLS, session TTL, limits, retention) + `nodes[]` (id, label, runner `{type: local|ssh, target, workdir, venv}`, gpu `{vram_gb, quant: bnb8|bf16, train_slots, infer_slots, budgets: {train_gb, infer_gb}}`, endpoints `{lan_ip, robot_port}`, presets, features `{ninfer: {...}}`) + per-student limit defaults. The shipped default describes the current fleet (pai1 + 2 campus + home); a new deployment ships with a minimal one-node config.
+- **Fleet = one YAML file** (`fleet.yaml`, validated against one schema in core): console block (bind, ports, TLS, session TTL, limits, retention) + `nodes[]` (id, label, runner `{type: local|ssh, target, workdir, venv}`, gpu `{vram_gb, quant: bnb8|bf16, train_slots, infer_slots, budgets: {train_gb, infer_gb}}`, endpoints `{lan_ip, robot_port}`, presets, features `{ninfer: {...}}`) + per-student limit defaults. The shipped default describes the launch fleet (pai1 enabled; node2/node3/home-8060s as disabled inventory entries); a new deployment ships with a minimal one-node config.
 - **Runner = the only hardware boundary.** One interface, two implementations: `LocalRunner` (subprocess in the console host's venv) and `SshRunner` (`ssh` + `nohup`; datasets/metrics over `rsync` LAN). Same JobSpec in, same metrics/events out. A third implementation (ssh into a rented cloud A100/H100) is an escape hatch that requires no code change anywhere else.
 - **Per-node hardware profiles** drive all presets (VRAM budgets, quantization, batch, slots) — a new 24 GB node joins as a config line + probe; nothing is recompiled or re-pinned globally.
 - **Deploy anywhere:** Ubuntu 22.04/24.04 + any supported accelerator (NVIDIA CUDA or ROCm). Two install paths: Docker Compose (console + optional nginx for TLS) or bare `uv venv && uv sync` + shipped systemd units (`robovla-console.service`, `ninfer.service` where the assistant 27B runs). Provisioning jobs (`model_download`, `gpu_selftest`) run per node; the console itself is ~1.5–2k LOC.
@@ -252,7 +259,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 | Dimension | What changes |
 |---|---|
 | More GPUs | one config entry (LAN ssh or cloud) + join probe. Scheduler, UI, tests unchanged. |
-| More students | accounts are rows; per-student caps + 3 trainers keep the queue sane; board scales. |
+| More students | accounts are rows; per-student caps + morning/overnight windows (launch, single trainer) and added nodes (scaling) keep the queue sane; board scales. |
 | Multi-room / multi-school | same console image + different `fleet.yaml`; optional class-code tenancy if two classes share one console. |
 | Bigger / newer VLA models (OFT, FAST, PRIME) | job spec carries model id + processor; same upload/QA/queue/SSE pipeline. |
 | Console SPOF | rebuild from repo + restore backup < 1 h; episode data also lives on the 12 PIs. |
@@ -286,7 +293,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 |---|---|---|
 | Unit — core | scheduler ordering (incl. run-now, no-preemption, budget fit: 16 GB node → batch-1 preset, 2-slot admission on 32 GB) · kill/reschedule transition table · QA rules (frame/action mismatch, 10 Hz timing, idle > 2 s, sign flip, jump anomaly) · norm stats + un-normalization round-trip · held-out split determinism · JobSpec + config schema validation | every PR · CPU · < 60 s |
 | Integration — service (CPU, FakeRunner) | chunked upload (incl. zip-slip payload rejected) → prep → QA gate → queue admission → SSE (state/metrics/val events, heartbeat, resume) → artifact manifest → robot `predict` with mocked model + token auth · RBAC (student 403 on others' runs and all `/api/admin`) · idempotency dedup · rate limits · audit-log entry for every admin action | every PR · CPU · < 5 min |
-| Simulated class E2E (CPU) | scripted 12-student scenario: 12 uploads → 12 submissions across 3 nodes (1+1+1 train slots, 5 infer) → queue drains in expected order → kill/bump/requeue mid-drain → demo-day 5-slot relay schedule (§7.7) → backup + restore round-trip | nightly + per release |
+| Simulated class E2E (CPU) | scripted 12-student scenario: 12 uploads → 12 submissions (launch config = pai1 only; extended config = +node2/node3 to exercise multi-endpoint first-fit, node pinning, and student-selectable gating) → queue drains in expected order → kill/bump/requeue mid-drain → demo-day 2-slot relay schedule (§7.7) → backup + restore round-trip | nightly + per release |
 | Hardware-gated (GPU) | `gpu_selftest` per node (torch/CUDA visible, load 7.5 B, 8-bit fwd/bwd, bf16 fwd/bwd where it fits, `predict_action` on held-out images, 10-step QLoRA) · `home_selftest` (ROCm gfx1151: `torch.cuda.is_available`, bf16 GEMM benchmark, load + predict, 10-step bf16 fwd/bwd — no bnb) | manual · node join + stack changes |
 | Robot (Pi) | token auth · LAN predict round-trip · stale-action watchdog stop · slot lease expiry | per class milestone (M5–M7) |
 
@@ -296,7 +303,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 |---|---|---|---|---|
 | **0** | Now → ~1 wk | instructor + AI coder (assistant) | Home-box ROCm verify (`home_selftest`); provisioning (uv venv, torch cu128, openvla clone, 15 GB model download); core (scheduler/budgets/QA/spec/config) test-first per §11; console scaffold (auth, users, nodes, upload + prep/QA, queue, SSE, UI, LAN bind) against FakeRunner; admin surface §9.7; systemd units; 12 accounts | 12 students log in on the campus LAN, upload, watch a simulated run; teacher panel works end-to-end |
 | **1** | First GPU window | AI coder; teacher triggers | `gpu_selftest` on pai1, Blackwell stack pin, `smoke`, 50-episode `crosscheck` | real training verified (class gate M5) |
-| **2** | By Class 9 | AI coder | `robovla_train.py` integration, validation harness, merge/export, inference slots + Pi token auth, class board, teacher panel complete; 5090 Ti + 4070 Ti joined via config + probe | console production-ready for the class |
+| **2** | By Class 9 | AI coder | `robovla_train.py` integration, validation harness, merge/export, inference slots + Pi token auth, class board, teacher panel complete; 5090 Ti + 4070 Ti join via the admin node registry when they come online (deferred — not needed at launch) | console production-ready for the class |
 | **3** | Extension week (Class 17) | **students** + AI coder | standalone capture app (PySide6; vendors `episode.py`/`norm_stats.py`), Foxglove live-feed panel, QA-flag + board-view contributions | students own part of the instrument |
 
 **Pedagogical integration:** the console *replaces* the "build the TUI" class activity. Classes 9–10: the console is live → students operate it, read `robovla_train.py` (12 sections, one per student), run the crosscheck, own the experiment tickets. With 12 individual students and 1 robot each, the console is the shared lab instrument — like the eval harness.
@@ -308,7 +315,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 | Blackwell stack pinning (torch/tf/bnb/flash-attn) | Early selftest; SDPA fallback; pinned in-repo; runner interface dispatches to any node if pai1 fails |
 | Runner heterogeneity (32 GB / 16 GB / iGPU) | Per-runner batch presets + VRAM budget guard; per-node selftest; 4070 Ti batch-1-only |
 | Home box ROCm (gfx1151) friction | `home_selftest` first; bf16-only (no bnb); fallback: CPU torch for engine verification; class never depends on it |
-| No-preemption + 12 students → queue pressure | 3 trainers (2×32 GB + 16 GB) + fast free smoke runs + morning/overnight windows; run-now = front-of-line after current completion |
+| No-preemption + 12 students → queue pressure (single trainer at launch) | morning + overnight windows carry full runs; fast free smoke runs in class; run-now = front-of-line after current completion; pressure relieved by adding nodes via the admin page (config-only, §8.2) |
 | Demo-day 12-robot concurrency | 5 inference slots + pipelined relay (§7.7) — all robots cycling continuously |
 | ssh dispatch failure | Fail-fast, auto-reschedule on next runner, checkpoint resume |
 | Zombie VRAM | Post-job probe + teacher purge |
@@ -319,7 +326,7 @@ Base URL: `http://<console-lan-ip>:8501` (console); robot inference on each node
 
 ## 14. Open questions
 
-1. **Wiring:** are the 5090 Ti and 4070 Ti machines on the campus LAN (wired 1 GbE preferred)? Need a LAN IP each for SSH runner + Pi inference endpoints.
+1. **Wiring (later — not needed for launch):** when the 5090 Ti and 4070 Ti machines come online, are they on the campus LAN (wired 1 GbE preferred)? Each needs a LAN IP for the SSH runner + Pi inference endpoints, then joins via the admin node registry (§8.2).
 2. **ninfer release windows:** confirm mornings (e.g., 07:00–08:30) + overnight as defaults?
 3. **Demo day date + audience** (sizing the relay schedule; judges/audience seating in the sub-arenas).
 4. **Student laptop inputs:** keyboards only, or do some students have USB gamepads (capture app input design)?
@@ -353,6 +360,7 @@ nodes:
     gpu: {vram_gb: 32, quant: bnb8, train_slots: 1, infer_slots: 2,
           budgets: {train_gb: 18, infer_gb: 11}}
     endpoints: {lan_ip: "<PAI1_LAN_IP>", robot_port: 8502}
+    student_selectable: true     # launch node; the only node students can name at submit
     features:
       ninfer:
         service: ninfer
@@ -386,7 +394,7 @@ nodes:
     enabled: false          # off-campus; teacher enables for overnight integration work
 ```
 
-Notes: `train_slots: 1` everywhere is the §3 default; the teacher raises a 32 GB node to 2 via the admin lever (reduced-batch preset + budget guard apply). Placeholder IPs are filled in at wiring time (§14 Q1) — code never hardcodes them.
+Notes: **pai1 is the only enabled node at launch**; node2/node3/home-8060s are verified inventory, disabled until they come online — adding them later is an admin-page operation (add node → probe → enable, §8.2), no code or redeploy. `train_slots: 1` everywhere is the §3 default; the teacher raises a 32 GB node to 2 via the admin lever (reduced-batch preset + budget guard apply). `student_selectable` (default false) controls whether students can name a node at submission (§9.3). Placeholder IPs are filled in at wiring time (§14 Q1) — code never hardcodes them.
 
 ## Appendix B — JobSpec JSON (the single contract)
 
