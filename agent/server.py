@@ -32,6 +32,7 @@ import shutil
 import threading
 from collections import deque
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,7 @@ from fastapi.responses import JSONResponse
 
 from robovla.core.errors import STATUS_BY_CODE, RobovlaError
 
+from .argv import job_argv
 from .config import AgentConfig
 from .jobs import JobRunner
 from .pull import pull_bundle
@@ -238,6 +240,9 @@ def make_agent_app(cfg: AgentConfig) -> FastAPI:
     """Production wiring (the entrypoint the image runs)."""
     log = LogRing(cfg.log_path)
     jobs = JobRunner(cfg.workdir, grace_s=cfg.kill_grace_s,
+                     # the image default (/opt/robovla/bin) when the env is
+                     # unset; ROBOVLA_JOB_BIN overrides (direct-venv nodes)
+                     argv_builder=partial(job_argv, bin_path=cfg.job_bin),
                      puller=make_puller(cfg, log), log=log.log)
     probe = VramProbe(cfg.gpu)
     serving = SlotServing(make_default_model_factory(cfg.workdir, log=log.log))

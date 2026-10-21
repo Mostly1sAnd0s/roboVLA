@@ -73,7 +73,11 @@ COPY images/bin /opt/robovla/bin
 RUN chmod +x /opt/robovla/bin/robovla_job /opt/robovla/bin/finetune
 
 # The agent owns the process lifecycle; :8601 is console-only traffic.
-# Host mounts (podman quadlet): <host workdir> -> /data, <model volume> -> /models
+# Host mounts (podman quadlet): <host workdir> -> /data, <model volume> -> /models.
+# -m agent (NOT -m agent.server): the __main__ guard lives in agent/__main__.py;
+# "agent.server" has none, so the process imported and exited silently (exit 0)
+# — dead-on-arrival agent. Pinned by tests/integration/test_agent_entrypoint.py,
+# which runs this exact argv (host65 first real boot, 2026-10-21).
 WORKDIR /data
 EXPOSE 8601
-ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent.server"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent"]

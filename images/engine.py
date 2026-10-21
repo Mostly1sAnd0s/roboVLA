@@ -140,7 +140,9 @@ def _device(torch):
 
 def _episodes_raw(ds_root: Path):
     """(episode_id, task, [frame_paths], [7d actions]) from episodes/ep_*/."""
-    from robovla.episode import load_episode
+    # load_episode is the FILE SEAM (fs) — it parses episode.json/actions.json
+    # and counts frames/; the pure core (robovla.episode) carries no I/O.
+    from robovla.fs import load_episode
 
     root = ds_root / "episodes"
     if not root.is_dir():

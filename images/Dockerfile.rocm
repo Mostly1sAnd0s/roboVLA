@@ -64,6 +64,9 @@ RUN chmod +x /opt/robovla/bin/robovla_job /opt/robovla/bin/finetune
 
 # Same container contract as the CUDA image: the quadlet mounts the host
 # workdir -> /data and the model volume -> /models; :8601 is console-only.
+# -m agent (NOT -m agent.server): the __main__ guard lives in agent/__main__.py;
+# "agent.server" has none, so the process imported and exited silently (exit 0)
+# — dead-on-arrival agent (pinned by test_agent_entrypoint.py).
 WORKDIR /data
 EXPOSE 8601
-ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent.server"]
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent"]

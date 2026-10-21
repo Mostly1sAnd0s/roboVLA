@@ -257,3 +257,58 @@ def test_crosscheck_smaller_dataset_copies_all(tmp_path):
     d = dict(zip(argv[2::2], argv[3::2]))
     eps = pathlib.Path(d["--data_path"]) / "episodes"
     assert len(list(eps.iterdir())) == 30
+
+
+# -- dataset loading (CPU: engine._samples is pure — no GPU stack) ---------------
+
+
+def _real_dataset(root, episodes: int = 2, frames: int = 3) -> pathlib.Path:
+    """The node dataset layout end-to-end: episodes/ep_NNNN/{episode.json,
+    actions.json, frame_*.jpg} + norm_stats.json (what _episodes_raw /
+    _samples read; Phase 1 host65: the engine imported load_episode from the
+    wrong module — zero coverage kept it alive)."""
+    from PIL import Image
+
+    ds = root / "datasets" / "s01__stop-at-target__v1"
+    for ep in range(1, episodes + 1):
+        d = ds / "episodes" / f"ep_{ep:04d}"
+        d.mkdir(parents=True)
+        (d / "episode.json").write_text(json.dumps(
+            {"id": f"ep_{ep:04d}", "task": "stop at the target"}))
+        (d / "actions.json").write_text(json.dumps([
+            {"t": i * 0.1, "vx": 0.1 * ep + 0.01 * i, "vy": 0.2 * ep,
+             "wz": 0.3 * ep} for i in range(frames)]))
+        for i in range(frames):
+            Image.new("RGB", (224, 224), (ep * 30, 100, i * 40)).save(
+                d / f"frame_{i + 1:04d}.jpg", "JPEG")
+    (ds / "norm_stats.json").write_text(json.dumps(
+        {"min": [-1.0] * 7, "max": [1.0] * 7}))
+    return ds
+
+
+def test_samples_loads_dataset_layout(tmp_path):
+    ds = _real_dataset(tmp_path, episodes=20)
+    spec = {"student": "s00", "dataset": "s01/stop-at-target/v1",
+            "prompt_template": "In: What action should the robot take to {task}?\nOut:"}
+    train, held, stats = engine._samples(ds, spec)
+    # 20 episodes x 3 frames = 60 samples; the seeded per-episode hash split
+    # (split.HELD_OUT_FRACTION, (s00, stop-at-target)) keeps exactly 5 episodes
+    # (ep_0003/0009/0012/0015/0017) held out — deterministic, assert exactly.
+    assert len(train) == 45 and len(held) == 15
+    frame, prompt, norm, target = train[0]
+    assert frame.endswith(".jpg") and pathlib.Path(frame).is_file()
+    assert prompt == ("In: What action should the robot take to "
+                      "stop at the target?\nOut:")
+    assert len(norm) == 7 and all(0.0 <= v <= 1.0 for v in norm)
+    assert norm == target  # the sample carries the same normalized 7d twice
+    assert stats.min == (-1.0,) * 7 and stats.max == (1.0,) * 7
+
+
+def test_samples_requires_norm_stats(tmp_path):
+    ds = _real_dataset(tmp_path)
+    (ds / "norm_stats.json").unlink()
+    with pytest.raises(RobovlaError) as ei:
+        engine._samples(ds, {"student": "s00",
+                             "dataset": "s01/stop-at-target/v1",
+                             "prompt_template": "x {task} y"})
+    assert ei.value.code == "dataset_not_ready"
