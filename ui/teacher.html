@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — teacher</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Teacher panel <span class="muted small">(every action is audit-logged, §9.7)</span></h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>Nodes (the registry is the fleet config, §8.2)</h2>
+      <table id="nodes"><thead><tr>
+        <th>node</th><th>state</th><th>VRAM</th><th>slots</th><th>presets</th><th>orphan</th><th></th>
+      </tr></thead><tbody></tbody></table>
+      <details><summary>add node</summary>
+        <label>id</label><input id="nid" placeholder="node2">
+        <label>label</label><input id="nlabel">
+        <label>agent LAN ip</label><input id="nip" placeholder="10.0.x.x">
+        <label>agent port</label><input id="nport" type="number" value="8601">
+        <label>vram_gb</label><input id="nvram" type="number" value="32">
+        <label>train_slots</label><input id="ntrain" type="number" value="1">
+        <label>infer_slots</label><input id="ninfer" type="number" value="2">
+        <label>train budget GB</label><input id="ntgb" type="number" value="18">
+        <label>infer budget GB</label><input id="nigb" type="number" value="11">
+        <label>batch presets (comma)</label><input id="npresets" value="1,4,8">
+        <label>priority</label><input id="nprio" type="number" value="1">
+        <label class="row"><input id="nselect" type="checkbox"> student-selectable</label>
+        <button class="secondary" id="nadd">Add node (agent token shown once)</button>
+        <pre id="nout" class="log" style="display:none"></pre>
+      </details>
+      <p class="small muted">Node host lifecycle (container restart / image update / GPU reset)
+        is a host-side one-liner on the node, not a panel action — <code>robovla-node</code> (§8.2).</p>
+    </div>
+    <div class="card">
+      <h2>Queue ops</h2>
+      <table id="jobs"><thead><tr>
+        <th>job</th><th>student</th><th>type</th><th>state</th><th>node</th><th></th>
+      </tr></thead><tbody></tbody></table>
+      <h2 style="margin-top:16px">System</h2>
+      <div class="row"><span class="label">maintenance</span>
+        <button class="secondary" id="maint">toggle</button>
+        <span id="maintstate" class="small muted"></span></div>
+      <div class="row"><span class="label">backup</span>
+        <button class="secondary" id="bk">trigger backup</button>
+        <span id="bkstate" class="small muted"></span></div>
+      <h2 style="margin-top:16px">Audit (latest 30)</h2>
+      <div id="audit" class="small mono" style="max-height:260px; overflow:auto"></div>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user || user.role !== "teacher") { location.href = "/ui/index.html"; return; }
+nav("teacher.html", user);
+
+async function loadNodes() {
+  const { nodes } = await api("/api/admin/nodes");
+  $("#nodes tbody").innerHTML = nodes.map(n => `<tr>
+    <td><b>${esc(n.label ?? n.id)}</b><br><span class="muted mono small">${esc(n.id)}</span></td>
+    <td>${badge(n.enabled ? (n.online ? "online" : "offline") : "disabled")}</td>
+    <td>${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.gpu.vram_gb} GB</td>
+    <td>T${n.gpu.train_slots} / I${n.gpu.infer_slots}</td>
+    <td class="mono small">${n.presets?.batch?.join("/") ?? ""}</td>
+    <td>${n.orphan_alert ? `<span style="color:var(--err)">⚠ ${n.orphan_pids?.join(",")}</span>` : "—"}</td>
+    <td class="small">
+      <button class="secondary" data-act="probe" data-n="${esc(n.id)}">probe</button>
+      <button class="secondary" data-act="logs" data-n="${esc(n.id)}">logs</button>
+      <button class="danger" data-act="purge" data-n="${esc(n.id)}"
+        ${n.orphan_pids?.length ? "" : "disabled"}>purge</button>
+    </td></tr>`).join("");
+  $$("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, b.dataset.n)));
+}
+
+async function act(act, n) {
+  try {
+    if (act === "probe") {
+      const r = await api(`/api/admin/nodes/${n}/probe`, { method: "POST" });
+      toast(`probe ${n}: ${r.ok ? "OK" : "not ok — " + (r.reason ?? "")}`);
+    } else if (act === "logs") {
+      const r = await api(`/api/admin/nodes/${n}/logs`);
+      $("#nout").style.display = "block";
+      $("#nout").textContent = (r.log ?? []).join("\n");
+    } else if (act === "purge") {
+      const { nodes } = await api("/api/admin/nodes");
+      const pids = nodes.find(x => x.id === n)?.orphan_pids ?? [];
+      if (!pids.length) return;
+      const r = await api(`/api/admin/nodes/${n}/purge-vram`,
+        { method: "POST", body: { pids } });
+      toast(`purged ${r.purged.join(",")} on ${n}`);
+      loadNodes();
+    }
+  } catch (err) { toast(err.message, true); }
+}
+
+async function loadJobs() {
+  const { jobs } = await api("/api/admin/jobs");
+  $("#jobs tbody").innerHTML = jobs.map(j => `<tr>
+    <td class="mono small"><a href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
+    <td>${esc(j.student)}</td><td>${esc(j.job_type)}</td>
+    <td>${badge(j.state)}</td><td class="muted">${esc(j.node_id ?? "auto")}</td>
+    <td class="small">
+      ${j.state === "queued"
+        ? `<button class="secondary" data-j="${esc(j.job_id)}" data-a="bump">run now</button>
+           <button class="secondary" data-j="${esc(j.job_id)}" data-a="requeue">pin</button>` : ""}
+      ${j.state !== "done" && j.state !== "failed" && j.state !== "killed"
+        ? `<button class="danger" data-j="${esc(j.job_id)}" data-a="kill">kill</button>` : ""}
+      ${j.state !== "done" && j.state !== "failed" && j.state !== "killed"
+        ? `<button class="secondary" data-j="${esc(j.job_id)}" data-a="complete">complete</button>` : ""}
+    </td></tr>`).join("");
+  $$("[data-j]").forEach(b => b.addEventListener("click", async () => {
+    const { j: job, a } = b.dataset;
+    try {
+      if (a === "bump") await api(`/api/admin/jobs/${job}/bump`, { method: "POST" });
+      else if (a === "kill") await api(`/api/admin/jobs/${job}/kill`, { method: "POST" });
+      else if (a === "requeue") {
+        const node = prompt("pin to node (empty = auto):");
+        if (node == null) return;
+        await api(`/api/admin/jobs/${job}/requeue`, { method: "POST", body: { node_id: node || null } });
+      } else if (a === "complete") {
+        const note = prompt("manual completion note (required, §8.3):");
+        if (!note) return;
+        await api(`/api/admin/jobs/${job}/complete`, { method: "POST", body: { note } });
+      }
+      toast(`ok: ${a}`);
+      loadJobs();
+    } catch (err) { toast(err.message, true); }
+  }));
+}
+
+async function loadSystem() {
+  const h = await api("/api/health");
+  $("#maintstate").textContent = h.service.maintenance ? "ON" : "off";
+  $("#audit").innerHTML = (await api("/api/admin/audit")).entries.slice(0, 30)
+    .map(a => `<div>${fmtTs(a.at).slice(5, 16)} ${esc(a.actor)} <b>${esc(a.action)}</b>
+       ${esc(a.target ?? "")}</div>`).join("");
+}
+
+$("#nadd").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/admin/nodes", { method: "POST", body: {
+      id: $("#nid").value, label: $("#nlabel").value,
+      lan_ip: $("#nip").value, port: +$("#nport").value,
+      gpu: { vram_gb: +$("#nvram").value, quant: "bnb8",
+             train_slots: +$("#ntrain").value, infer_slots: +$("#ninfer").value,
+             budgets: { train_gb: +$("#ntgb").value, infer_gb: +$("#nigb").value } },
+      batch: $("#npresets").value.split(",").map(s => +s.trim()).filter(Boolean),
+      priority: +$("#nprio").value, student_selectable: $("#nselect").checked,
+      enabled: true, image: "robovla-runner-cuda:2026.10", workdir: "/srv/robovla",
+    }});
+    $("#nout").style.display = "block";
+    $("#nout").textContent =
+      `agent token (shown once):\n${r.agent_token}\n` +
+      `then on the host:  robovla-node enroll --node ${r.node_id}`;
+    toast("node added (token shown once)");
+    loadNodes();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#maint").addEventListener("click", async () => {
+  const on = !$("#maintstate").textContent.startsWith("ON");
+  await api("/api/admin/maintenance", { method: "POST", body: { on } });
+  loadSystem();
+});
+$("#bk").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/admin/backups/trigger", { method: "POST" });
+    $("#bkstate").textContent = r ? `${r.sha256?.slice(0, 12) ?? "ok"}` : "ok";
+  } catch (err) { toast(err.message, true); }
+});
+
+loadNodes(); loadJobs(); loadSystem();
+setInterval(() => { loadNodes(); loadJobs(); }, 15000);
+})();
+</script>
+</body>
+</html>

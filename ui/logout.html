@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>logging out…</title></head>
+<body>
+<script>
+fetch("/api/auth/logout", { method: "POST" }).finally(() => { location.href = "/ui/login.html"; });
+</script>
+<p>Logging out…</p>
+</body>
+</html>

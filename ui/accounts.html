@@ -1,0 +1,142 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — accounts</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Student accounts <span class="muted small">(§8.1 — one-time passwords on paper, no email)</span></h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>Roster</h2>
+      <table id="users"><thead><tr>
+        <th>id</th><th>name</th><th>role</th><th>state</th><th>limits</th><th></th>
+      </tr></thead><tbody></tbody></table>
+      <h2 style="margin-top:14px">Add student</h2>
+      <div class="row">
+        <input id="uid" placeholder="s13" style="max-width:90px">
+        <input id="uname" placeholder="display name">
+        <button id="add">create (password shown once)</button>
+      </div>
+      <pre id="addout" class="log" style="display:none"></pre>
+      <details><summary>import CSV roster (id,name,email,role,active)</summary>
+        <textarea id="csv" placeholder="id,name,email,role,active&#10;s01,Avery,s01@campus,student,true"></textarea>
+        <button class="secondary" id="imp">import</button>
+      </details>
+    </div>
+    <div class="card">
+      <h2>User detail</h2>
+      <div id="detail" class="small">pick a student →</div>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user || user.role !== "teacher") { location.href = "/ui/index.html"; return; }
+nav("accounts.html", user);
+
+async function loadUsers() {
+  const { users } = await api("/api/admin/users");
+  $("#users tbody").innerHTML = users.map(u => `<tr>
+    <td class="mono">${esc(u.user_id)}</td>
+    <td>${esc(u.display_name)}</td>
+    <td>${esc(u.role)}</td>
+    <td>${u.active ? badge("online") : badge("offline")}
+      <span class="muted small">${u.active ? "active" : "inactive"}</span></td>
+    <td class="muted small">r${u.max_running ?? "–"} q${u.max_queued ?? "–"}</td>
+    <td class="small"><a href="#" data-u="${esc(u.user_id)}">manage</a></td>
+  </tr>`).join("");
+  $$("[data-u]").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await showDetail(a.dataset.u);
+  }));
+}
+
+async function showDetail(uid) {
+  const [{ users }, { sessions }] = await Promise.all([
+    api("/api/admin/users"), api(`/api/admin/users/${uid}/sessions`),
+  ]);
+  const u = users.find(x => x.user_id === uid);
+  $("#detail").innerHTML = `
+    <p><b class="mono">${esc(uid)}</b> — ${esc(u.display_name)}
+       <span class="muted">(${esc(u.email ?? "no email")})</span></p>
+    <div class="row"><span class="label">active</span>
+      <button class="secondary" id="act">${u.active ? "deactivate" : "activate"}</button></div>
+    <div class="row"><span class="label">limits</span>
+      <span class="muted">max_running ${u.max_running ?? "default"} ·
+      max_queued ${u.max_queued ?? "default"} · run_now ${u.run_now ?? "default"}</span></div>
+    <div class="row"><span class="label">password</span>
+      <button class="secondary" id="pw">reset (one-time)</button></div>
+    <div class="row"><span class="label">Pi token</span>
+      <button class="secondary" id="tok">generate/rotate</button>
+      <button class="danger" id="tokrev">revoke</button></div>
+    <p class="muted" style="margin-top:10px">sessions (${sessions.sessions.length}):</p>
+    <div id="sess"></div>
+    <pre id="dout" class="log" style="display:none"></pre>`;
+  $("#sess").innerHTML = sessions.sessions.map(s =>
+    `<div class="row"><span class="mono small">${esc(s.session_id)}</span>
+     <span class="muted small">expires ${fmtTs(s.expires_at)}</span>
+     <button class="danger small" data-sid="${esc(s.session_id)}">revoke</button></div>`).join("")
+    || `<span class="muted">none</span>`;
+  $$("[data-sid]").forEach(b => b.addEventListener("click", async () => {
+    await api(`/api/admin/users/${uid}/sessions/${b.dataset.sid}`, { method: "DELETE" });
+    toast("session revoked"); showDetail(uid);
+  }));
+  $("#act").addEventListener("click", async () => {
+    await api(`/api/admin/users/${uid}`, { method: "PATCH", body: { active: !u.active } });
+    toast("ok"); loadUsers(); showDetail(uid);
+  });
+  $("#pw").addEventListener("click", async () => {
+    const r = await api(`/api/admin/users/${uid}/reset-password`, { method: "POST" });
+    out(`one-time password (shown once):\n${r.password}`);
+  });
+  async function tokAct(a) {
+    try {
+      const r = await api(`/api/admin/users/${uid}/tokens/${a}`, { method: "POST" });
+      if (r.token) out(`Pi token (shown once):\n${r.token}`);
+      else toast("token revoked");
+    } catch (err) { toast(err.message, true); }
+  }
+  $("#tok").addEventListener("click", () => tokAct("rotate").catch(() => tokAct("generate")));
+  $("#tokrev").addEventListener("click", () => tokAct("revoke"));
+}
+
+function out(text) {
+  const el = $("#dout") || $("#addout");
+  el.style.display = "block";
+  el.textContent = text;
+}
+
+$("#add").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/admin/users", {
+      method: "POST",
+      body: { user_id: $("#uid").value.trim(), display_name: $("#uname").value.trim(),
+              active: true },
+    });
+    out(`password (shown once):\n${r.password}`);
+    toast(`${r.user_id} created (active)`);
+    loadUsers();
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#imp").addEventListener("click", async () => {
+  try {
+    const r = await api("/api/admin/users/import", { method: "POST", body: { csv: $("#csv").value } });
+    toast(`imported: ${r.created.join(", ") || "nothing new"}`);
+    loadUsers();
+  } catch (err) { toast(err.message, true); }
+});
+
+loadUsers();
+})();
+</script>
+</body>
+</html>

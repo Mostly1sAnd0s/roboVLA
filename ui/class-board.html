@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — class board</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <div class="row" style="margin-bottom:10px">
+    <h1 class="grow">Class board</h1>
+    <button class="secondary" onclick="window.print()">print</button>
+  </div>
+  <div class="grid cols3" id="summary"></div>
+  <div class="grid cols2" style="margin-top:12px">
+    <div class="card">
+      <h2>Queue (all students, live)</h2>
+      <table id="queue"><thead><tr>
+        <th>job</th><th>student</th><th>type</th><th>state</th><th>pos</th><th>ETA</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>Inference slots</h2>
+      <table id="slots"><thead><tr>
+        <th>slot job</th><th>student</th><th>run</th><th>state</th><th>pos</th>
+      </tr></thead><tbody></tbody></table>
+      <h2 style="margin-top:14px">Nodes</h2>
+      <div id="nodes" class="small"></div>
+    </div>
+  </div>
+  <div class="card" style="margin-top:12px" id="allcard">
+    <h2>All runs</h2>
+    <table id="all"><thead><tr>
+      <th>job</th><th>student</th><th>type</th><th>dataset</th><th>state</th><th>node</th><th>submitted</th>
+    </tr></thead><tbody></tbody></table>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("class-board.html", user);
+const isTeacher = user.role === "teacher";
+if (!isTeacher) $("#allcard").style.display = "none";
+
+async function load() {
+  const [q, h, slots] = await Promise.all([
+    api("/api/runs/queue"), api("/api/health"), api("/api/infer/slots"),
+  ]);
+  const running = q.queue.filter(j => j.state === "running").length;
+  const queued = q.queue.filter(j => j.state === "queued").length;
+  $("#summary").innerHTML = `
+    <div class="card"><span class="muted small">running</span>
+      <div style="font-size:22px">${running}</div></div>
+    <div class="card"><span class="muted small">queued</span>
+      <div style="font-size:22px">${queued}</div></div>
+    <div class="card"><span class="muted small">maintenance</span>
+      <div style="font-size:22px">${h.service.maintenance ? "ON" : "off"}</div></div>`;
+
+  $("#queue tbody").innerHTML = q.queue.map(j => `<tr>
+      <td><a class="mono small" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
+      <td>${esc(j.student)}</td><td>${esc(j.job_type)}</td>
+      <td>${badge(j.state)}</td>
+      <td>${j.state === "queued" ? j.position : "—"}</td>
+      <td>${j.state === "queued" ? fmtEta(j.eta_s) : "—"}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="muted">queue is empty</td></tr>`;
+
+  $("#slots tbody").innerHTML = slots.slots.map(s => `<tr>
+      <td class="mono small">${esc(s.job_id)}</td>
+      <td>${esc(s.student)}</td>
+      <td class="mono small">${s.run_id ? esc(s.run_id) : "—"}</td>
+      <td>${badge(s.state)}</td>
+      <td>${s.state === "queued" ? s.position : "—"}</td></tr>`).join("")
+    || `<tr><td colspan="5" class="muted">no slots claimed</td></tr>`;
+
+  $("#nodes").innerHTML = h.nodes.map(n =>
+    `<div class="row"><span class="grow">${badge(n.online ? "online" : "offline")}
+     <b>${esc(n.label ?? n.id)}</b></span>
+     <span>${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.vram_gb} GB free ·
+     queue ${n.queue_depth}</span></div>`).join("");
+
+  if (isTeacher) {
+    const { runs } = await api("/api/runs");
+    $("#all tbody").innerHTML = runs.map(j => `<tr>
+        <td><a class="mono small" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
+        <td>${esc(j.student)}</td><td>${esc(j.job_type)}</td>
+        <td class="muted small">${esc(j.dataset)}</td>
+        <td>${badge(j.state)}</td>
+        <td class="muted">${esc(j.node_id ?? "auto")}</td>
+        <td class="muted small">${fmtTs(j.submitted_at)}</td></tr>`).join("");
+  }
+}
+load().catch(err => toast(err.message, true));
+setInterval(load, 10000);
+})();
+</script>
+</body>
+</html>

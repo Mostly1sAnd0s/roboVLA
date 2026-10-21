@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA console — log in</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<main style="max-width:380px; margin-top:12vh">
+  <h1>roboVLA training console</h1>
+  <p class="muted small">Class lab instrument — 12 students, 1 robot each.</p>
+  <form id="f">
+    <label for="u">Username</label>
+    <input id="u" autocomplete="username" autofocus required>
+    <label for="p">Password</label>
+    <input id="p" type="password" autocomplete="current-password" required>
+    <button type="submit">Log in</button>
+  </form>
+  <p id="err" class="small" style="color:var(--err)"></p>
+</main>
+<script>
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  try {
+    const r = await fetch("/api/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        username: document.getElementById("u").value,
+        password: document.getElementById("p").value,
+      }),
+    });
+    if (!r.ok) {
+      const d = await r.json().catch(() => ({}));
+      throw new Error(d.error ? d.error.message : `HTTP ${r.status}`);
+    }
+    location.href = "/ui/index.html";
+  } catch (err) {
+    document.getElementById("err").textContent = err.message;
+  }
+});
+</script>
+</body>
+</html>

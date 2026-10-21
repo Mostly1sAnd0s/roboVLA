@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — run</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Run <span class="mono" id="jobid"></span> <span id="state"></span></h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>Progress <span class="muted small" id="eta"></span></h2>
+      <div class="bar" style="margin-bottom:10px"><i id="pfill" style="width:0%"></i></div>
+      <canvas id="loss" class="spark"></canvas>
+      <p class="small muted" id="losscap"></p>
+      <canvas id="val" class="spark"></canvas>
+      <p class="small muted">held-out val accuracy (per checkpoint)</p>
+      <div class="grid cols3" style="margin-top:8px">
+        <div><span class="muted small">step</span><div id="step">—</div></div>
+        <div><span class="muted small">loss</span><div id="lossv">—</div></div>
+        <div><span class="muted small">grad norm</span><div id="grad">—</div></div>
+        <div><span class="muted small">lr</span><div id="lrv">—</div></div>
+        <div><span class="muted small">VRAM</span><div id="vram">—</div></div>
+        <div><span class="muted small">util</span><div id="util">—</div></div>
+      </div>
+      <div id="probe"></div>
+    </div>
+    <div class="card">
+      <h2>Config</h2>
+      <div id="cfg" class="small mono"></div>
+      <details><summary>raw log (live)</summary><pre id="log" class="log"></pre></details>
+      <h2 style="margin-top:14px">Artifacts <span class="muted small">(§7.6)</span></h2>
+      <div id="arts" class="small">—</div>
+      <div id="actions" style="margin-top:14px"></div>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("", user);
+const job = new URLSearchParams(location.search).get("job");
+if (!job) { location.href = "/ui/index.html"; return; }
+
+const view = await api(`/api/runs/${job}`).catch(err => { toast(err.message, true); return; });
+$("#jobid").textContent = job;
+$("#cfg").innerHTML = `<table>
+  <tr><td class="muted">type / student</td><td>${esc(view.job_type)} / ${esc(view.student)}</td></tr>
+  <tr><td class="muted">dataset</td><td>${esc(view.dataset)}</td></tr>
+  <tr><td class="muted">node</td><td>${esc(view.node_id ?? "auto")}</td></tr>
+  <tr><td class="muted">quant / seed</td><td>${esc(view.config.quant)} / ${view.config.seed}</td></tr>
+  <tr><td class="muted">lora</td><td>rank ${view.config.lora.rank} · α ${view.config.lora.alpha}</td></tr>
+  <tr><td class="muted">optim</td><td>batch ${view.config.optim.batch} · lr ${view.config.optim.lr}
+      · epochs ${view.config.optim.epochs}</td></tr>
+  <tr><td class="muted">budget</td><td>${view.config.budget_gb} GB (est.)</td></tr>
+</table>`;
+
+function setState(v) {
+  $("#state").innerHTML = badge(v.state);
+  if (v.state === "queued") {
+    $("#eta").textContent = `position ${v.position} · ETA ${fmtEta(v.eta_s)}`;
+    if (v.blockers) $("#eta").textContent += ` · waiting: ` +
+      v.blockers.map(b => `${b.node} (${b.reason})`).join(", ");
+  }
+}
+setState(view);
+
+// terminal jobs: seed history from the REST views, skip the live stream
+const losses = [], vals = [], logEl = $("#log");
+if (view.state === "done" || view.state === "failed" || view.state === "killed") {
+  try {
+    const { log } = await api(`/api/runs/${job}/logs?offset=0`);
+    logEl.textContent = log;
+  } catch { /* logs purged or never dispatched */ }
+}
+
+const close = view.state === "running" || view.state === "queued" || view.state === "finishing"
+  ? sse(job, (type, d) => {
+      if (type === "state") {
+        setState({ state: d.state, position: d.position, eta_s: d.eta_s });
+        if (d.state === "done" || d.state === "failed" || d.state === "killed") {
+          loadMeta(); loadArts();
+        }
+      }
+      if (type === "metrics") {
+        losses.push([d.step, d.loss]);
+        $("#step").textContent = `${d.step}/${d.total ?? "?"}`;
+        $("#lossv").textContent = d.loss != null ? d.loss.toFixed(4) : "—";
+        $("#grad").textContent = d.grad_norm != null ? d.grad_norm.toFixed(3) : "—";
+        $("#lrv").textContent = d.lr != null ? String(d.lr) : "—";
+        $("#vram").textContent = d.vram_gb != null ? `${d.vram_gb.toFixed(1)} GB` : "—";
+        $("#util").textContent = d.gpu_util != null ? `${Math.round(d.gpu_util * 100)}%` : "—";
+        const total = d.total ?? Math.max(...losses.map(p => p[0]));
+        $("#pfill").style.width = `${Math.min(100, d.step / total * 100).toFixed(1)}%`;
+        spark($("#loss"), [{ color: "#4cc2ff", points: losses }]);
+        $("#losscap").textContent = `train loss (${losses.length} points)`;
+      }
+      if (type === "val") {
+        vals.push([vals.length + 1, d.accuracy]);
+        spark($("#val"), [{ color: "#3fb950", points: vals }]);
+      }
+      if (type === "log") {
+        logEl.textContent += d.line + "\n";
+        logEl.scrollTop = logEl.scrollHeight;
+      }
+      if (type === "predict")
+        $("#probe").innerHTML = `<p class="small">smoke probe action:
+          <span class="mono">${d.action_norm.map(v => v.toFixed(2)).join(" ")}</span></p>`;
+      if (type === "artifacts") loadArts();
+    })
+  : () => {};
+
+async function loadMeta() {
+  const v = await api(`/api/runs/${job}`).catch(() => null);
+  if (v) setState(v);
+}
+async function loadArts() {
+  try {
+    const { artifacts } = await api(`/api/runs/${job}/artifacts`);
+    $("#arts").innerHTML = artifacts.length
+      ? artifacts.map(a => `<div class="row"><span class="mono">${esc(a.kind)}</span>
+          <span class="muted">${fmtBytes(a.nbytes)}</span>
+          <a href="/api/runs/${job}/artifacts/${esc(a.kind)}" download>download</a></div>`).join("")
+      : "—";
+  } catch { /* not ours / no artifacts yet */ }
+}
+loadArts();
+
+const amOwner = user.role === "teacher" || view.student === user.user_id;
+const canKill = user.role === "teacher"
+  ? view.state !== "done" && view.state !== "failed" && view.state !== "killed"
+  : view.state === "queued";
+if (amOwner) {
+  $("#actions").innerHTML = `
+    <a class="mono small" href="/api/runs/${job}/ticket">ticket →</a>
+    ${canKill ? `<button class="danger" id="kill">kill</button>` : ""}`;
+  const k = $("#kill");
+  if (k) k.addEventListener("click", async () => {
+    try {
+      await api(`/api/runs/${job}/kill`, { method: "POST" });
+      toast("kill requested");
+      setState({ state: "killed" });
+    } catch (err) { toast(err.message, true); }
+  });
+}
+})();
+</script>
+</body>
+</html>

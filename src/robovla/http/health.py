@@ -28,7 +28,11 @@ async def health(request: Request) -> dict:
              "online": s.node_state(n.id).online,
              "free_gb": round(s.node_state(n.id).free_vram_gb, 2),
              "vram_gb": n.gpu.vram_gb,
-             "queue_depth": depth.get(n.id, 0)}
+             "queue_depth": depth.get(n.id, 0),
+             # fleet config (not secret) — the new-run form filters node +
+             # batch options with these (§7.3, §8.2)
+             "student_selectable": n.student_selectable,
+             "batch_presets": list(n.presets.batch)}
             for n in s.fleet.nodes
         ],
     }

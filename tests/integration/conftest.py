@@ -79,7 +79,8 @@ def episode_zip(ep_count: int = 101, episodes_per_task: str = "stop-at-target") 
 
 
 class Env:
-    def __init__(self, tmp: pathlib.Path, free_gb: float = 30.0):
+    def __init__(self, tmp: pathlib.Path, free_gb: float = 30.0,
+                 ui_dir: pathlib.Path | None = None):
         self.tmp = tmp
         self.fleet = parse_fleet(FLEET)
         self.storage = Storage(tmp / "state.db")
@@ -87,7 +88,7 @@ class Env:
         self.svc = ConsoleService(
             tmp, self.fleet, self.storage, {NODE: self.runner},
             clock=lambda: "2026-10-21T09:00:00Z", tick_s=0.01)
-        self.app = create_app(self.svc)
+        self.app = create_app(self.svc, ui_dir=ui_dir)
         self.client = TestClient(self.app)
         self._seed_users()
 

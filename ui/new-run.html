@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — new run</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>New run</h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>Submit</h2>
+      <label for="ds">Dataset (ready only)</label>
+      <select id="ds"></select>
+      <label for="type">Job type</label>
+      <select id="type">
+        <option value="smoke">smoke (fast, no ticket)</option>
+        <option value="train">train (needs an experiment ticket)</option>
+        <option value="validate">validate</option>
+        <option value="merge">merge</option>
+        <option value="crosscheck">crosscheck</option>
+      </select>
+      <label for="node">Node (auto = first-fit in priority order, §3)</label>
+      <select id="node"><option value="auto">auto</option></select>
+      <label for="batch">Batch</label>
+      <select id="batch"></select>
+      <details id="adv">
+        <summary>advanced (values from the class preset catalog — max_seq_len fixed at 287)</summary>
+        <label>rank</label><input id="rank" type="number" value="32">
+        <label>alpha</label><input id="alpha" type="number" value="32">
+        <label>lr</label><input id="lr" type="number" step="0.0001" value="0.0005">
+        <label>epochs</label><input id="epochs" type="number" value="1">
+        <label>image augmentation</label><input id="aug" type="checkbox" checked>
+        <label>seed</label><input id="seed" type="number" value="13">
+      </details>
+      <button id="go">Submit</button>
+      <div id="result" class="small" style="margin-top:10px"></div>
+    </div>
+    <div class="card">
+      <h2>Experiment ticket <span class="muted small">(required for train — §9.3)</span></h2>
+      <label for="tk">Use an existing ticket</label>
+      <select id="tk"><option value="">— new ticket below —</option></select>
+      <label for="hyp">Hypothesis</label>
+      <textarea id="hyp" placeholder="e.g. rank 32 + aug captures the stop-at-target behavior…"></textarea>
+      <label for="cfg">Config summary</label>
+      <input id="cfg" placeholder="e.g. batch 4, 1 epoch, seed 13">
+      <label for="pred">Prediction</label>
+      <input id="pred" placeholder="e.g. held-out accuracy ≥ 0.6">
+      <div class="row">
+        <button id="mk" class="secondary">Create ticket</button>
+        <span class="muted small" id="tknote"></span>
+      </div>
+      <p class="small muted" id="tklist" style="margin-top:14px"></p>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("new-run.html", user);
+const isTeacher = user.role === "teacher";
+
+const [{ datasets }, h] = await Promise.all([api("/api/datasets"), api("/api/health")]);
+$("#ds").innerHTML = datasets
+  .filter(d => d.status === "ready")
+  .map(d => `<option value="${esc(d.dataset_id)}">${esc(d.dataset_id)} (${d.episode_count} ep)</option>`)
+  .join("") || `<option value="">no ready datasets — upload one first</option>`;
+
+// node options: auto + student-selectable (teacher: any enabled)
+const nodes = h.nodes.filter(n => n.enabled && (isTeacher || n.student_selectable));
+$("#node").innerHTML += nodes
+  .map(n => `<option value="${esc(n.id)}">${esc(n.label ?? n.id)} (${n.vram_gb} GB)</option>`)
+  .join("");
+
+// batch options: the selected node's presets (auto: union of all enabled nodes)
+function refreshBatch() {
+  const nid = $("#node").value;
+  const opts = nid === "auto"
+    ? [...new Set(h.nodes.filter(n => n.enabled).flatMap(n => n.batch_presets))].sort((a, b) => a - b)
+    : h.nodes.find(n => n.id === nid)?.batch_presets ?? [];
+  $("#batch").innerHTML = opts.map(b => `<option>${b}</option>`).join("") || "<option>—</option>";
+}
+$("#node").addEventListener("change", refreshBatch);
+refreshBatch();
+
+async function loadTickets() {
+  const { tickets } = await api("/api/tickets");
+  const unlinked = tickets.filter(t => t.state === "unlinked");
+  $("#tk").innerHTML = `<option value="">— new ticket below —</option>` +
+    unlinked.map(t => `<option value="${esc(t.ticket_id)}">${esc(t.ticket_id)}</option>`).join("");
+  $("#tklist").innerHTML = tickets.map(t =>
+    `<div class="row"><span class="mono small">${esc(t.ticket_id)}</span>
+     <span class="muted small">${esc(t.prediction ?? "").slice(0, 40)}</span>
+     ${badge(t.state)}${t.outcome ? ` <span class="small muted">→ ${esc(t.outcome).slice(0, 30)}</span>` : ""}</div>`
+  ).join("") || "No tickets yet.";
+  if (isTeacher) {
+    $("#tk").innerHTML += tickets.filter(t => t.state === "unlinked" && t.owner !== user.user_id)
+      .map(t => `<option value="${esc(t.ticket_id)}">${esc(t.ticket_id)} (for ${esc(t.owner)})</option>`).join("");
+  }
+}
+loadTickets().catch(err => toast(err.message, true));
+
+$("#mk").addEventListener("click", async () => {
+  try {
+    const t = await api("/api/tickets", { method: "POST", body: {
+      hypothesis: $("#hyp").value, config_summary: $("#cfg").value,
+      prediction: $("#pred").value,
+    }});
+    toast(`ticket ${t.ticket_id} created`);
+    await loadTickets();
+    $("#tk").value = t.ticket_id;
+  } catch (err) { toast(err.message, true); }
+});
+
+$("#go").addEventListener("click", async () => {
+  const type = $("#type").value;
+  const body = {
+    dataset_id: $("#ds").value, job_type: type, node_id: $("#node").value,
+    config: { batch: +$("#batch").value },
+  };
+  if (type === "train") {
+    body.ticket_id = $("#tk").value;
+    if (!body.ticket_id) { toast("train requires a ticket — pick or create one", true); return; }
+  }
+  if (document.getElementById("adv").open) {
+    body.config.rank = +$("#rank").value;
+    body.config.alpha = +$("#alpha").value;
+    body.config.lr = +$("#lr").value;
+    body.config.epochs = +$("#epochs").value;
+    body.config.image_aug = $("#aug").checked;
+    body.config.seed = +$("#seed").value;
+  }
+  $("#go").disabled = true;
+  try {
+    const r = await api("/api/runs", {
+      method: "POST", body,
+      headers: { "Idempotency-Key": crypto.randomUUID() },
+    });
+    let out = `<b>${r.job_id}</b> ${r.deduped ? "(deduped — same idempotency key)" : ""} · ` +
+      `position ${r.position}` + (r.eta_s != null ? ` · ETA ${fmtEta(r.eta_s)}` : "");
+    if (r.waiting) out += ` · <span style="color:var(--warn)">waiting on ${r.waiting}</span>: ` +
+      r.blockers.map(b => `${b.node} (${b.reason})`).join(", ");
+    out += ` — <a href="/ui/run.html?job=${esc(r.job_id)}">open run</a>`;
+    $("#result").innerHTML = out;
+  } catch (err) {
+    $("#result").innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`;
+  } finally {
+    $("#go").disabled = false;
+  }
+});
+})();
+</script>
+</body>
+</html>

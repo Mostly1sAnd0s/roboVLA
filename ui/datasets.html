@@ -1,0 +1,169 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — datasets</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Datasets</h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>Upload a dataset zip</h2>
+      <p class="small muted">
+        One task per zip: <code>episodes/ep_NNNN/frames/*.jpg</code> +
+        <code>actions.json</code> + <code>episode.json</code> (10 Hz capture).
+        Uploaded in 8 MB chunks; the console re-checks the whole-zip sha256.
+      </p>
+      <label for="file">Zip file</label>
+      <input type="file" id="file" accept=".zip">
+      <label for="dsid">Dataset id (owner / task / version)</label>
+      <input id="dsid" placeholder="e.g. s01/stop-at-target/v1">
+      <div id="upload-progress" style="display:none">
+        <div class="bar"><i id="upfill" style="width:0%"></i></div>
+        <div class="small muted" id="uptext">…</div>
+      </div>
+      <button id="up" disabled>Upload + prep</button>
+      <pre id="uplog" class="log" style="display:none; max-height:160px"></pre>
+    </div>
+    <div class="card">
+      <h2>My datasets</h2>
+      <div id="list" style="max-height:420px; overflow:auto"></div>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("datasets.html", user);
+const CHUNK = 8 * 1024 * 1024;
+
+function uplog(line, cls = "") {
+  const el = $("#uplog");
+  el.style.display = "block";
+  const d = document.createElement("div");
+  d.className = cls;
+  d.textContent = line;
+  el.append(d);
+  el.scrollTop = el.scrollHeight;
+}
+
+async function sha256Hex(buf) {
+  const d = await crypto.subtle.digest("SHA-256", buf);
+  return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+$("#file").addEventListener("change", () => {
+  $("#up").disabled = !$("#file").files.length;
+});
+
+$("#up").addEventListener("click", async () => {
+  const f = $("#file").files[0];
+  const dsid = $("#dsid").value.trim();
+  if (!f || !dsid) { toast("pick a zip and a dataset id", true); return; }
+  if (!dsid.startsWith(user.user_id + "/")) {
+    toast(`dataset id must start with your id (${user.user_id}/…)` , true); return;
+  }
+  $("#up").disabled = true;
+  uplog(""); $("#uplog").style.display = "block";
+  $("#upload-progress").style.display = "block";
+  try {
+    const blob = await f.arrayBuffer();
+    const sha = await sha256Hex(blob);
+    const n = Math.max(1, Math.ceil(blob.byteLength / CHUNK));
+    uplog(`file ${f.name} — ${fmtBytes(blob.byteLength)}, sha256 ${sha.slice(0, 16)}…, ${n} chunk(s)`);
+    for (let i = 0; i < n; i++) {
+      const fd = new FormData();
+      fd.append("dataset_id", dsid);
+      fd.append("total_chunks", String(n));
+      fd.append("chunk_index", String(i));
+      fd.append("sha256", sha);
+      fd.append("file", f.slice(i * CHUNK, (i + 1) * CHUNK), `chunk-${i}`);
+      await api("/api/datasets/upload", { method: "POST", body: fd });
+      $("#upfill").style.width = `${Math.round((i + 1) / n * 90)}%`;
+      $("#uptext").textContent = `chunk ${i + 1}/${n} uploaded`;
+    }
+    $("#uptext").textContent = "finalizing (extract + QA + stats + split)…";
+    const rep = await api("/api/datasets/upload/finalize", {
+      method: "POST", body: { dataset_id: dsid, total_chunks: n, sha256: sha },
+    });
+    $("#upfill").style.width = "100%";
+    uplog(`status: ${rep.status}${rep.status === "failed" ? " — QA gate failed, see details" : ""}`);
+    if (rep.status === "ready")
+      uplog(`ready: ${rep.qa.summary.episode_count} episodes`, "ok");
+    loadList();
+  } catch (err) {
+    uplog(`ERROR: ${err.message}`, "err");
+  } finally {
+    $("#up").disabled = false;
+  }
+});
+
+async function loadList() {
+  const { datasets } = await api("/api/datasets");
+  $("#list").innerHTML = datasets.length ? datasets.map(d =>
+    `<div class="row" style="border-bottom:1px solid var(--line); padding:8px 0">
+       <span class="grow mono small">${esc(d.dataset_id)}</span>
+       <span class="small muted">${d.episode_count ?? "—"} ep · ${fmtBytes(d.total_bytes)}</span>
+       ${badge(d.status)}
+       ${d.status === "ready"
+         ? `<a href="#" data-ds="${esc(d.dataset_id)}">details</a>` : ""}
+     </div>`).join("")
+    : `<span class="muted">No datasets yet.</span>`;
+  $$("[data-ds]").forEach(a => a.addEventListener("click", async (e) => {
+    e.preventDefault();
+    await showDetail(a.dataset.ds);
+  }));
+}
+
+async function showDetail(dsid) {
+  const [ds, qa, ns] = await Promise.all([
+    api(`/api/datasets/${encodeURIComponent(dsid)}`),
+    api(`/api/datasets/${encodeURIComponent(dsid)}/qa`),
+    api(`/api/datasets/${encodeURIComponent(dsid)}/norm-stats`).catch(() => null),
+  ]);
+  const s = qa.qa.summary;
+  const dims = ["x", "y", "θ", "grip", "vx", "vy", "wz"];
+  const el = document.createElement("div");
+  el.className = "card";
+  el.innerHTML = `
+    <h2>${esc(dsid)} ${badge(qa.qa.status)}</h2>
+    <p class="small">episodes ${s.episode_count} · ok ${s.ok} · warned ${s.warned} · failed ${s.failed}
+       ${ds.rejected_reason ? ` · <span style="color:var(--err)">rejected: ${esc(ds.rejected_reason)}</span>` : ""}
+    </p>
+    <table><thead><tr><th>dim</th><th>min</th><th>max</th></tr></thead><tbody>
+    ${ns ? ns.norm_stats.min.map((m, i) =>
+      `<tr><td>${dims[i] ?? i}</td><td>${m.toFixed(3)}</td><td>${ns.norm_stats.max[i].toFixed(3)}</td></tr>`).join("") : ""}
+    </tbody></table>
+    <p class="small muted">issues:</p>
+    <ul class="small">
+      ${qa.qa.issues.slice(0, 8).map(i =>
+        `<li class="${i.severity === "fail" ? "" : "muted"}">[${i.severity}]
+         ${i.episode_id ? esc(i.episode_id) : "dataset"} — ${esc(i.rule)}: ${esc(i.detail)}</li>`).join("")
+       || "<li class='muted'>none</li>"}
+    </ul>
+    <details><summary>revalidate (re-run QA/stats/split after a fix)</summary>
+      <button class="secondary" data-re="${esc(dsid)}">Revalidate</button>
+    </details>`;
+  document.querySelector("main").append(el);
+  el.scrollIntoView({ behavior: "smooth" });
+  el.querySelector("[data-re]").addEventListener("click", async () => {
+    try {
+      const r = await api(`/api/datasets/${encodeURIComponent(dsid)}/revalidate`, { method: "POST" });
+      toast(`revalidated: ${r.qa.status}`);
+      loadList();
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+loadList().catch(err => toast(err.message, true));
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — dashboard</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Dashboard</h1>
+  <div class="grid cols2">
+    <div class="card">
+      <h2>My queue position</h2>
+      <div id="queue"></div>
+    </div>
+    <div class="card">
+      <h2>Nodes (live)</h2>
+      <table id="nodes"><thead><tr>
+        <th>node</th><th>state</th><th>free VRAM</th><th>queue</th>
+      </tr></thead><tbody></tbody></table>
+    </div>
+    <div class="card">
+      <h2>My runs</h2>
+      <table id="runs"><thead><tr>
+        <th>job</th><th>type</th><th>dataset</th><th>state</th><th>progress</th><th>node</th>
+      </tr></thead><tbody></tbody></table>
+      <a href="/ui/new-run.html">+ New run</a>
+    </div>
+    <div class="card">
+      <h2>My datasets</h2>
+      <table id="datasets"><thead><tr>
+        <th>dataset</th><th>episodes</th><th>size</th><th>state</th>
+      </tr></thead><tbody></tbody></table>
+      <a href="/ui/datasets.html">Manage datasets →</a>
+    </div>
+    <div class="card grow">
+      <h2>Class activity <span class="muted small">(live feed)</span></h2>
+      <div id="feed" class="small" style="max-height:280px; overflow:auto"></div>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("index.html", user);
+
+async function loadStatic() {
+  const [q, h, runs, dsets] = await Promise.all([
+    api("/api/runs/queue"), api("/api/health"),
+    api("/api/runs"), api("/api/datasets"),
+  ]);
+  const mine = q.queue.filter(j => j.student === user.user_id);
+  $("#queue").innerHTML = mine.length
+    ? mine.map(j => `<div class="row"><span class="label">${esc(j.job_id)}
+        ${badge(j.state)}</span>
+        <span class="val">${j.state === "queued"
+          ? `position ${j.position} · ETA ${fmtEta(j.eta_s)}`
+          : `on ${esc(j.node_id ?? "?")}`}</span></div>`).join("")
+    : `<span class="muted">Nothing in the queue — <a href="/ui/new-run.html">submit a run</a>.</span>`;
+
+  $("#nodes tbody").innerHTML = h.nodes.map(n => `<tr>
+      <td>${esc(n.label ?? n.id)}</td>
+      <td>${badge(n.online ? "online" : "offline")}</td>
+      <td>${n.free_gb != null ? `${n.free_gb.toFixed(1)} / ${n.vram_gb} GB` : "—"}</td>
+      <td>${n.queue_depth}</td></tr>`).join("");
+
+  $("#runs tbody").innerHTML = runs.runs.map(j => `<tr>
+      <td><a class="mono" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
+      <td>${esc(j.job_type)}</td>
+      <td class="muted small">${esc(j.dataset)}</td>
+      <td>${badge(j.state)}</td>
+      <td>${j.progress && j.progress.step != null
+        ? `${j.progress.step}/${j.progress.total}` : "—"}</td>
+      <td class="muted">${esc(j.node_id ?? "auto")}</td></tr>`).join("")
+    || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`;
+
+  $("#datasets tbody").innerHTML = dsets.datasets.map(d => `<tr>
+      <td class="mono small">${esc(d.dataset_id)}</td>
+      <td>${d.episode_count ?? "—"}</td>
+      <td>${fmtBytes(d.total_bytes)}</td>
+      <td>${badge(d.status)}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">No datasets — <a href="/ui/datasets.html">upload one</a>.</td></tr>`;
+}
+
+const FEED = {
+  queue: j => `${j.event}: ${j.job_id}${j.student ? ` (${j.student})` : ""}`,
+  artifacts: j => `artifacts ready: ${j.job_id}`,
+  slots: j => `slot ${j.event}: ${j.job_id}`,
+  node: j => `node ${j.node_id}: ${j.event}`,
+  config: j => `fleet config changed (${j.changes.length} field(s))`,
+  dataset: j => `dataset ${j.event}: ${j.dataset_id}`,
+};
+const close = sse("class", (t, d) => {
+  const line = FEED[t] ? FEED[t](d) : `${t}: ${JSON.stringify(d).slice(0, 80)}`;
+  const el = document.createElement("div");
+  el.className = "row";
+  el.innerHTML = `<span class="muted mono">${new Date().toISOString().slice(11, 19)}</span>
+                  <span class="grow">${esc(line)}</span>`;
+  const feed = $("#feed");
+  feed.prepend(el);
+  while (feed.children.length > 60) feed.lastChild.remove();
+});
+
+loadStatic().catch(err => toast(err.message, true));
+setInterval(loadStatic, 15000); // queue/positions refresh; live events come via SSE
+})();
+</script>
+</body>
+</html>
