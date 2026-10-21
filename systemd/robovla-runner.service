@@ -1,0 +1,52 @@
+# roboVLA runner (design Appendix C) — one per NODE host: a podman unit
+# wrapping the standard runner container (agent :8601 + job programs, §10).
+#
+# Per-node values live in /etc/robovla/node.env (the EnvironmentFile),
+# NEVER in this unit — no node name, IP, or token here (§10: hardware and
+# endpoints live in config, not code):
+#
+#   /etc/robovla/node.env:
+#     ROBOVLA_LAN_IP    <node LAN IP>
+#     ROBOVLA_AGENT_TOKEN   <shown once at node add>
+#     ROBOVLA_WORKDIR   /home/adam/robovla
+#     ROBOVLA_MODEL_DIR=/home/adam/robovla/models/openvla-7b
+#     ROBOVLA_IMAGE=robovla-runner-cuda:2026.10
+#
+# NVIDIA (campus nodes): as shipped (nvidia device passthrough).
+# ROCm (home dev lab, gfx1151): replace the four nvidia --device lines with
+#   --device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined
+# and set ROBOVLA_GPU=rocm + ROBOVLA_IMAGE=robovla-runner-rocm:... in the
+# env file.
+#
+# Install: copy to /etc/systemd/system/robovla-runner.service (or run
+# ``robovla-node install``, which pulls the image and enables this unit).
+# Logs: journalctl -u robovla-runner -f.
+[Unit]
+Description=roboVLA runner (standard container, agent on 8601)
+After=network-online.target podman.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=adam
+EnvironmentFile=-/etc/robovla/node.env
+ExecStart=/usr/bin/podman run --rm \
+    --name robovla-runner \
+    --device /dev/nvidia0 \
+    --device /dev/nvidiactl \
+    --device /dev/nvidia-uvm \
+    --device /dev/nvidia-uvm-tools \
+    --cap-add SYS_PTRACE \
+    -v ${ROBOVLA_WORKDIR}:/data \
+    -v ${ROBOVLA_MODEL_DIR}:/models:ro \
+    --env-file /etc/robovla/node.env \
+    -e ROBOVLA_WORKDIR=/data \
+    -e ROBOVLA_MODEL_DIR=/models/openvla-7b \
+    -p ${ROBOVLA_LAN_IP}:8601:8601 \
+    ${ROBOVLA_IMAGE}
+ExecStop=/usr/bin/podman stop robovla-runner
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

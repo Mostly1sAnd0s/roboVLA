@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# robovla-node — the node-host lifecycle as teacher one-liners (design
+# §8.2/§10, Appendix C). The console talks to the AGENT, not the host: this
+# script is the only thing that touches the host's container.
+#
+#   robovla-node install     pull image + enable/start the runner unit
+#   robovla-node update      pull new image + restart the unit
+#   robovla-node restart     restart the runner unit
+#   robovla-node status      unit status + agent /health (measured, §8.2)
+#   robovla-node stop        stop the unit (queued jobs requeue, §8.2)
+#   robovla-node gpu-reset --confirm
+#                            nvidia-smi --gpu-reset / rocm-smi --reset —
+#                            REQUIRES --confirm AND zero job processes in
+#                            the container (drops every VRAM tenant, §3:
+#                            the 27B assistant is the teacher's to manage)
+#
+# Node env (in /etc/robovla/node.env — no IP/token in this repo, §10):
+#   ROBOVLA_LAN_IP, ROBOVLA_AGENT_TOKEN, ROBOVLA_WORKDIR (default
+#   /home/adam/robovla), ROBOVLA_MODEL_DIR, ROBOVLA_IMAGE (default
+#   robovla-runner-cuda:2026.10), ROBOVLA_GPU (cuda|rocm, default cuda)
+set -euo pipefail
+
+UNIT="${ROBOVLA_UNIT:-robovla-runner}"
+IMAGE="${ROBOVLA_IMAGE:-robovla-runner-cuda:2026.10}"
+WORKDIR="${ROBOVLA_WORKDIR:-/home/adam/robovla}"
+GPU="${ROBOVLA_GPU:-cuda}"
+ENV_FILE="${ROBOVLA_NODE_ENV:-/etc/robovla/node.env}"
+
+die() { echo "robovla-node: $*" >&2; exit 1; }
+
+env_loaded() {
+  [[ -f "$ENV_FILE" ]] || die "$ENV_FILE missing (set ROBOVLA_LAN_IP / ROBOVLA_AGENT_TOKEN / ROBOVLA_IMAGE)"
+  set -a
+  source "$ENV_FILE"
+  set +a
+}
+
+container_running() {
+  podman ps --format '{{.Names}}' 2>/dev/null | grep -qx "$UNIT"
+}
+
+cmd_install() {
+  env_loaded
+  if [[ ! -f "/etc/systemd/system/$UNIT.service" ]]; then
+    die "/etc/systemd/system/$UNIT.service missing — deploy systemd/robovla-runner.service there first"
+  fi
+  mkdir -p "$WORKDIR"/datasets "$WORKDIR"/runs "$WORKDIR"/artifacts "$WORKDIR"/models
+  podman pull "$IMAGE"
+  systemctl daemon-reload
+  systemctl enable --now "$UNIT"
+  echo "robovla-node: $UNIT up on $ROBOVLA_LAN_IP:8601 (image $IMAGE)"
+}
+
+cmd_update() {
+  env_loaded
+  podman pull "$IMAGE"
+  systemctl restart "$UNIT"
+  echo "robovla-node: $UNIT restarted on $IMAGE"
+}
+
+cmd_restart() {
+  systemctl restart "$UNIT"
+}
+
+cmd_status() {
+  systemctl --no-pager status "$UNIT" || true
+  if [[ -f "$ENV_FILE" ]]; then
+    env_loaded
+    curl -fsS --max-time 5 "http://127.0.0.1:8601/health" \
+      -H "Authorization: Bearer $ROBOVLA_AGENT_TOKEN" || echo "agent not reachable"
+  fi
+}
+
+cmd_stop() {
+  systemctl stop "$UNIT"
+}
+
+cmd_gpu_reset() {
+  [[ "${1:-}" == "--confirm" ]] || die "gpu-reset requires --confirm (it drops every VRAM tenant)"
+  if container_running && podman exec "$UNIT" pgrep -f "robovla_job|finetune" >/dev/null 2>&1; then
+    die "job processes running in $UNIT — no running jobs before a GPU reset (§8.2)"
+  fi
+  if [[ "$GPU" == "cuda" ]]; then
+    nvidia-smi --gpu-reset
+  else
+    rocm-smi --reset
+  fi
+}
+
+usage() {
+  die "usage: robovla-node {install|update|restart|status|stop|gpu-reset --confirm}"
+}
+
+main() {
+  local cmd="${1:-}"
+  shift || true
+  case "$cmd" in
+    install)
+      cmd_install ;;
+    update)
+      cmd_update ;;
+    restart)
+      cmd_restart ;;
+    status)
+      cmd_status ;;
+    stop)
+      cmd_stop ;;
+    gpu-reset)
+      cmd_gpu_reset "$@" ;;
+    *)
+      usage ;;
+  esac
+}
+
+main "$@"

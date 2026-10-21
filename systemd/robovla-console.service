@@ -1,0 +1,32 @@
+# roboVLA console (design Appendix C) — the CONSOLE host (no GPU).
+#
+# Runs ``robovla serve`` against the wired fleet.yaml (Appendix A: copy it
+# here and fill the placeholder LAN IPs at wiring time, §14 Q1). Bind/port
+# come from the fleet (console.bind / console.port); per-node agent tokens
+# come from the EnvironmentFile (one line per fleet.yaml token_ref name —
+# plaintext never in fleet.yaml or this unit, §9.8):
+#
+#   /home/adam/robovla-console/agent-tokens.env:
+#     pai1-agent=<shown once at node add>
+#     node2-agent=...
+#     node3-agent=...
+#
+# Install: copy to /etc/systemd/system/robovla-console.service, daemon-reload,
+# enable --now. Logs: journalctl -u robovla-console -f.
+[Unit]
+Description=roboVLA console (FastAPI + SQLite + SSE)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=adam
+WorkingDirectory=/home/adam/robovla
+Environment=ROBOVLA_FLEET=/home/adam/robovla-console/fleet.yaml
+EnvironmentFile=-/home/adam/robovla-console/agent-tokens.env
+ExecStart=/home/adam/robovla/.venv/bin/robovla serve
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

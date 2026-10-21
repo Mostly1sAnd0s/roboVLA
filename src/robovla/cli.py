@@ -10,6 +10,10 @@ Commands::
                                [--job-id J] [--timeout S]
     robovla cli model_download --url U --dest DIR [--name N]
     robovla cli node bootstrap --workdir DIR [--model-dir DIR]
+    robovla serve              [--fleet F | env ROBOVLA_FLEET]
+                               [--data-dir D] [--bind B] [--port P]
+                               (the console host; robovla-console.service
+                               runs this — binds from fleet.yaml unless overridden)
 
 House rules apply: shared seams only (backup, the Runner protocol, an
 injectable fetcher — no new I/O paths), §9.6 error codes, no shell (argv
@@ -27,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from . import server
 from .backup import make_backup_bundle, now_rfc3339, restore_backup
 from .core.budgets import estimate_job_gb
 from .core.config import parse_fleet
@@ -288,6 +293,11 @@ def cmd_node_bootstrap(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_serve(args: argparse.Namespace) -> int:
+    """Run the console (the console host; the systemd unit runs this)."""
+    return server.serve(args)
+
+
 # -- entrypoint ---------------------------------------------------------------------
 
 
@@ -302,6 +312,15 @@ def _build_parser() -> argparse.ArgumentParser:
         description="roboVLA operational CLI: backup/restore, node provisioning "
                     "(gpu_selftest, model_download, bootstrap).")
     groups = p.add_subparsers(dest="group", required=True)
+    s = groups.add_parser("serve",
+                          help="run the console (console host; no GPU)")
+    s.add_argument("--fleet",
+                   help=f"fleet.yaml (default: env {server.FLEET_ENV} or "
+                        f"{server.DEFAULT_FLEET})")
+    s.add_argument("--data-dir", help="override fleet console.data_dir")
+    s.add_argument("--bind", help="override fleet console.bind")
+    s.add_argument("--port", type=int, help="override fleet console.port")
+    s.set_defaults(fn=cmd_serve)
     cli = groups.add_parser("cli", help="operational commands").add_subparsers(
         dest="command", required=True)
 
