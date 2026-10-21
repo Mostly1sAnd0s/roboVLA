@@ -1,15 +1,14 @@
 """SQLite storage seam (design §11: "I/O only at seams"; DRY: no SQL anywhere
-else in the codebase — every query lives here).
+else in the codebase — every query lives here, plus the DDL in
+``storage_schema.py``).
 
 SQLite in WAL mode (console rebuilds are cheap, §10; readers never block the
-scheduler). This module stores *rows* as plain dicts; domain rules live in
-``robovla.core`` (the service validates with core before persisting).
-Timestamps are RFC 3339 strings supplied by the caller — the service owns the
-clock, so storage stays testable with injected times.
+scheduler). Rows are plain dicts; domain rules live in ``robovla.core`` (the
+service validates with core before persisting). Timestamps are RFC 3339
+strings supplied by the caller — the service owns the clock.
 
-Tables (design §8 / §9): users, sessions, tokens (Pi), agent_tokens,
-datasets, chunks, tickets, jobs, artifacts, audit (append-only), idempotency,
-backups, kv.
+Tables (design §8/§9): users, sessions, tokens (Pi), agent_tokens, datasets,
+chunks, tickets, jobs, artifacts, audit (append-only), idempotency, backups, kv.
 """
 
 from __future__ import annotations
@@ -20,13 +19,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from .storage_schema import SCHEMA as _SCHEMA
+
 #: Idempotency dedup window (design §9: 24 h).
 IDEMPOTENCY_TTL_H = 24
 
-from .storage_schema import SCHEMA as _SCHEMA
-
-
-_T = "2026-10-21T00:00:00Z"  # epoch stand-in for tests/defaults; real rows always carry caller time.
+_T = "2026-10-21T00:00:00Z"  # default stand-in; real rows always carry caller-supplied time
 
 
 def _now_rfc3339() -> str:
