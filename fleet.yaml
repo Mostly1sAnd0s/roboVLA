@@ -1,0 +1,60 @@
+version: 1
+console:
+  bind: 0.0.0.0            # pai1-only default (single LAN interface; §9.8) — elsewhere bind the explicit LAN IP
+  port: 8501
+  tls: false               # optional self-signed via reverse proxy
+  data_dir: /home/adam/robovla-console   # console state (DB + uploaded datasets), separate from node workdirs
+  session_ttl_h: 12
+  limits:
+    student:
+      max_running: 1       # an active inference slot counts as running
+      max_queued: 2
+      max_dataset_bytes: 2147483648   # 2 GB
+      max_run_min: 180
+      run_now: true
+    admin_rate: "60/min"
+  retention:
+    run_logs_per_student: 20
+    merged_export_days: 14
+    backup: {enabled: true, at: "02:30", dest: /home/adam/robovla-backups}
+
+nodes:
+  - id: pai1
+    label: "pai1 (RTX 5090, primary)"
+    image: robovla-runner-cuda:2026.10
+    workdir: /home/adam/robovla        # host bind mount → container's standard data layout
+    agent: {lan_ip: "<PAI1_LAN_IP>", port: 8601, token_ref: pai1-agent}
+    gpu: {vram_gb: 32, quant: bnb8, train_slots: 1, infer_slots: 2,
+          budgets: {train_gb: 18, infer_gb: 11}}
+    presets: {batch: [1, 4, 8]}        # allowed student batch options (grad-accum auto-matched)
+    priority: 0
+    student_selectable: true           # launch node; the only node students can name at submit
+    enabled: true
+
+  - id: node2
+    label: "campus RTX 5090 Ti"
+    image: robovla-runner-cuda:2026.10
+    workdir: /home/adam/robovla
+    agent: {lan_ip: "<NODE2_LAN_IP>", port: 8601, token_ref: node2-agent}
+    gpu: {vram_gb: 32, quant: bnb8, train_slots: 1, infer_slots: 2,
+          budgets: {train_gb: 18, infer_gb: 11}}
+    presets: {batch: [1, 4, 8]}
+    priority: 0
+    student_selectable: false
+    enabled: false          # until join probe passes
+
+  - id: node3
+    label: "campus RTX 4070 Ti (batch-1 only)"
+    image: robovla-runner-cuda:2026.10
+    workdir: /home/adam/robovla
+    agent: {lan_ip: "<NODE3_LAN_IP>", port: 8601, token_ref: node3-agent}
+    gpu: {vram_gb: 16, quant: bnb8, train_slots: 1, infer_slots: 1,
+          budgets: {train_gb: 14, infer_gb: 11}}
+    presets: {batch: [1]}       # grad-accum auto-matched to the recipe's effective batch
+    priority: 0
+    student_selectable: false
+    enabled: false          # until join probe passes
+
+# Home Strix Halo (8060S, ROCm): off-campus → not a cluster node (roboVLA is LAN-only).
+# Runs the same robovla-runner-rocm image as a self-contained dev lab on the home LAN
+# (console + agent + model, never exposed) for Phase 0 integration / home_selftest.

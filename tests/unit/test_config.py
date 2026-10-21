@@ -4,6 +4,8 @@ file happens at the seam (app/cli). ``diff`` feeds the admin audit log.
 """
 
 import copy
+import re
+from pathlib import Path
 
 import pytest
 import yaml
@@ -312,3 +314,37 @@ class TestDiff:
         # before/after JSON-serializable for the audit log (§8: before→after)
         import json
         json.dumps([c.to_dict() for c in changes])
+
+
+class TestShippedFleetFile:
+    """The repo-root fleet.yaml ships Appendix A verbatim. Wiring time only
+    fills the three placeholder IPs (§14 Q1) — after which parse_fleet must
+    accept it, and the result must be identical to the spec fixture (the
+    single source of truth, DRY)."""
+
+    REPO = Path(__file__).resolve().parents[2]
+    WIRE_IPS = {"<PAI1_LAN_IP>": "10.0.0.10", "<NODE2_LAN_IP>": "10.0.0.11",
+                "<NODE3_LAN_IP>": "10.0.0.12"}
+
+    def _text(self) -> str:
+        return (self.REPO / "fleet.yaml").read_text()
+
+    def test_exactly_the_three_placeholder_ips(self):
+        text = self._text()
+        placeholders = re.findall(r"<[^>]+>", text)
+        assert placeholders == ["<PAI1_LAN_IP>", "<NODE2_LAN_IP>", "<NODE3_LAN_IP>"]
+
+    def test_parses_after_ip_wiring_and_equals_fixture(self):
+        text = self._text()
+        wired = text
+        for ph, ip in self.WIRE_IPS.items():
+            wired = wired.replace(ph, ip)
+        assert parse_fleet(wired) == validate_fleet(copy.deepcopy(FLEET))
+
+    def test_unwired_placeholders_rejected(self):
+        # the shipped file is a template, not a config: the validator must
+        # refuse the <...> IPs, never silently accept them
+        with pytest.raises(RobovlaError) as e:
+            parse_fleet(self._text())
+        assert e.value.code == "validation"
+        assert "lan_ip" in e.value.message
