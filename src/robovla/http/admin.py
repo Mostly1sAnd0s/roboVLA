@@ -11,7 +11,6 @@ deliberately NOT here — host-side teacher one-liners (§8.2).
 from __future__ import annotations
 
 import secrets
-import zipfile
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +20,7 @@ from fastapi import APIRouter, Depends, Request
 from ..core.config import FleetConfig, NodeConfig, diff_fleet, parse_fleet
 from ..core.errors import RobovlaError
 from .auth import require_admin, svc
-from .. import jobs_ops, nodes_ops
+from .. import backup, jobs_ops, nodes_ops
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
 
@@ -394,23 +393,12 @@ async def backups(request: Request, user: dict = Depends(require_admin)) -> dict
 
 
 def _make_backup_bundle(s, dest: str) -> dict:
-    """Backup bundle (§8.4): datasets + adapters + DB snapshot, zipped."""
-    dest = Path(dest)
-    dest.mkdir(parents=True, exist_ok=True)
-    stamp = s.clock().replace(":", "-").replace("-", "-")
-    out = dest / f"robovla-backup-{stamp}.zip"
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zf:
-        for sub in ("datasets", "artifacts"):
-            base = s.data_dir / sub
-            if base.is_dir():
-                for f in base.rglob("*"):
-                    if f.is_file():
-                        zf.write(f, f.relative_to(s.data_dir))
-        db = s.storage.path
-        if db.exists():
-            zf.write(db, db.name)
-    import hashlib
-    blob = out.read_bytes()
-    sha = hashlib.sha256(blob).hexdigest()
-    s.storage.add_backup(s.clock(), str(out), len(blob), sha, "ok")
-    return {"path": str(out), "size_bytes": len(blob), "sha256": sha, "status": "ok"}
+    """Backup bundle (§8.4): the shared console seam (robovla.backup).
+
+    DRY with the CLI: one bundle builder, WAL-consistent DB snapshot
+    (online backup API), ``backups`` table row via the record hook.
+    """
+    return backup.make_backup_bundle(
+        s.data_dir, dest, clock=s.clock,
+        record=lambda i: s.storage.add_backup(
+            s.clock(), i["path"], i["size_bytes"], i["sha256"], i["status"]))

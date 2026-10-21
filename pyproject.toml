@@ -15,6 +15,9 @@ dependencies = [
     "uvicorn>=0.54.0",
 ]
 
+[project.scripts]
+robovla = "robovla.cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 

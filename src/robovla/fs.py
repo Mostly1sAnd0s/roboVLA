@@ -180,9 +180,10 @@ def safe_extract_tar(blob: bytes, dest: Path) -> list[Path]:
 # --- safe zip extraction (upload side) ---------------------------------------------
 
 
-def _is_symlink(info: zipfile.ZipInfo) -> bool:
-    # unix file type lives in the top 4 bits of the mode field (attr >> 16);
-    # S_IFLNK = 0o120000 -> (attr >> 28) == 0o12
+def zip_entry_is_link(info: zipfile.ZipInfo) -> bool:
+    """True for symlink entries (shared by ``safe_extract_zip`` and the
+    backup-restore seam). The unix file type lives in the top 4 bits of the
+    mode field; S_IFLNK = 0o120000 -> (attr >> 28) == 0o12."""
     return (info.external_attr >> 28) == 0o12
 
 
@@ -201,7 +202,7 @@ def safe_extract_zip(blob: bytes, dest: Path) -> list[Path]:
     written: list[Path] = []
     for info in zf.infolist():
         name = info.filename
-        if _is_symlink(info):
+        if zip_entry_is_link(info):
             _fail(f"refusing symlink entry {name!r}")
         if "\x00" in name:
             _fail(f"refusing entry with NUL byte: {name!r}")
