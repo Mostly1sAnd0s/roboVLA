@@ -262,6 +262,7 @@ def claim_slot(svc: ConsoleService, user: dict[str, Any], run_id: str) -> dict[s
     budget = svc.budget_for("infer", None)
     job_id = svc.new_job_id()
     spec = dict(row["spec"])
+    spec["job_id"] = job_id  # the infer job IS a new job id (not the run's)
     spec["type"] = "infer"
     spec["limits"] = {**spec["limits"], "budget_gb": budget}
     spec = validate_job_spec(spec)

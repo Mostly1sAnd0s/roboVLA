@@ -113,6 +113,7 @@ async def list_nodes(request: Request, user: dict = Depends(require_admin)) -> d
         {**_node_raw(n), "online": view.get(n.id, {}).get("online"),
          "free_gb": view.get(n.id, {}).get("free_gb"),
          "orphan_alert": view.get(n.id, {}).get("orphan_alert"),
+         "orphan_pids": view.get(n.id, {}).get("orphan_pids", []),
          "queue_depth": sum(1 for j in s.scheduler.jobs()
                             if j.state == "queued" and j.target_node == n.id)}
         for n in s.fleet.nodes]}

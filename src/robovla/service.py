@@ -159,7 +159,7 @@ class ConsoleService:
         return self.storage.get_kv("maintenance") == "on"
 
     def set_maintenance(self, on: bool, actor: str) -> None:
-        before, self.maintenance = self.maintenance, on
+        before = self.maintenance
         self.storage.set_kv("maintenance", "on" if on else "off")
         self.audit(actor, "system.maintenance", "console", {"on": before}, {"on": on})
 
@@ -233,10 +233,12 @@ class ConsoleService:
             if runner is None:
                 return
             if job.job_type == "infer":
+                # serving the adapter IS the job — nothing runs on the agent
                 handle = await asyncio.to_thread(
                     runner.serve, row["run_id"], self.adapter_path(row["run_id"]))
                 self.storage.set_job(job.job_id, slot_handle=handle)
-            await asyncio.to_thread(runner.submit, spec.to_dict())
+            else:
+                await asyncio.to_thread(runner.submit, spec.to_dict())
         except RobovlaError as e:
             if job.job_type == "infer":
                 self.storage.set_job(job.job_id, slot_handle=None)
@@ -267,6 +269,8 @@ class ConsoleService:
 
     async def _poll_active(self) -> None:
         for row in self.storage.list_jobs(state_in=("running", "finishing")):
+            if row["spec"]["type"] == "infer":
+                continue  # served adapters have no agent job to poll (lease only)
             runner = self.runners.get(row["node_id"] or "")
             if runner is None:
                 continue
@@ -364,12 +368,10 @@ class ConsoleService:
                 continue
             if (now - _dt(row["last_used_at"])).total_seconds() > LEASE_S:
                 self._release_infer_job(row)
-                self.bus.publish(row["job_id"], "state",
-                                 {"state": "killed", "reason": "lease expired"})
-                self.bus.publish("class", "slots", {"job_id": row["job_id"],
-                                                    "event": "released"})
 
     def _release_infer_job(self, row: dict[str, Any]) -> None:
+        """Release a served inference slot: agent handle, scheduler state,
+        storage row, class feed. No-op if already terminal (kill race)."""
         runner = self.runners.get(row["node_id"] or "")
         if runner is not None and row.get("slot_handle"):
             try:
@@ -377,8 +379,16 @@ class ConsoleService:
             except RobovlaError as e:
                 self.audit("system", "slot.release_failed", row["job_id"],
                            None, {"error": e.message})
+        try:
+            self._scheduler.transition(row["job_id"], "kill")
+        except RobovlaError:
+            return  # already terminal (an explicit kill won the race)
         self.storage.set_job(row["job_id"], state="killed",
                              terminal_at=self.clock(), slot_handle=None)
+        self.bus.publish(row["job_id"], "state",
+                         {"state": "killed", "reason": "released"})
+        self.bus.publish("class", "slots", {"job_id": row["job_id"],
+                                            "event": "released"})
 
     # -- helpers shared with jobs_ops / datasets_ops ---------------------------------------
 
