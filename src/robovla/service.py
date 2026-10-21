@@ -187,24 +187,29 @@ class ConsoleService:
 
     # -- node state (measured VRAM; tenancy is manual, §3) ---------------------------
 
-    def refresh_nodes(self) -> None:
-        states: dict[str, NodeState] = {}
-        procs: dict[str, list[dict]] = {}
-        for node in self.fleet.enabled_nodes():
+    async def refresh_nodes(self) -> None:
+        """Probe the enabled nodes' VRAM — the tick's node I/O, always
+        off the event loop (a probe is an http round trip with a 10 s
+        timeout: a slow/blackholed node must not stall the loop, the
+        console keeps serving UI/API while a node is down, §8.2).
+        Probes run concurrently: one unreachable node does not delay the
+        others."""
+        async def _probe(node: NodeConfig) -> tuple[str, NodeState, list[dict]]:
             runner = self.runners.get(node.id)
             if runner is None:
-                states[node.id] = NodeState(online=False, free_vram_gb=0.0)
-                procs[node.id] = []
-                continue
+                return node.id, NodeState(online=False, free_vram_gb=0.0), []
             try:
-                v = runner.vram()
-                states[node.id] = NodeState(online=True, free_vram_gb=float(v["free_gb"]))
-                procs[node.id] = v.get("procs", [])
+                v = await asyncio.to_thread(runner.vram)
+                return (node.id, NodeState(online=True,
+                                           free_vram_gb=float(v["free_gb"])),
+                        list(v.get("procs", [])))
             except RobovlaError:
-                states[node.id] = NodeState(online=False, free_vram_gb=0.0)
-                procs[node.id] = []
-        self._node_states = states
-        self._procs = procs
+                return node.id, NodeState(online=False, free_vram_gb=0.0), []
+
+        results = await asyncio.gather(
+            *(_probe(n) for n in self.fleet.enabled_nodes()))
+        self._node_states = {nid: st for nid, st, _ in results}
+        self._procs = {nid: procs for nid, _, procs in results}
 
     def node_state(self, node_id: str) -> NodeState:
         return self._node_states.get(node_id, NodeState(online=False, free_vram_gb=0.0))
@@ -212,7 +217,7 @@ class ConsoleService:
     # -- the tick: admission -> dispatch -> poll -> leases -----------------------------
 
     async def tick(self) -> None:
-        self.refresh_nodes()
+        await self.refresh_nodes()
         await self._dispatch_admitted()
         await self._poll_active()
         await self._expire_lease_holds()

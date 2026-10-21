@@ -7,6 +7,7 @@ Plus: idempotency dedup, run-now ordering, and the error-shape contract.
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 
@@ -201,3 +202,34 @@ def test_student_cannot_see_another_students_run(env):
     # queue (class board) is still visible to all
     r = env.client.get("/api/runs/queue")
     assert r.status_code == 200
+
+
+def test_refresh_nodes_runs_off_the_event_loop(env):
+    """The VRAM probe is the tick's node I/O. A slow/unreachable node
+    (10 s http timeout, blackholed LAN IP) must NOT stall the event loop:
+    the console keeps serving UI/API while a node is down, and server
+    startup completes even with every node unreachable (§8.2)."""
+    def slow_vram():
+        time.sleep(0.4)  # stand in for a slow LAN round trip
+        return {"free_gb": 30.0, "procs": []}
+    env.runner.vram = slow_vram
+
+    beats = []
+
+    async def spin():
+        for _ in range(5):
+            beats.append(1)
+            await asyncio.sleep(0.1)
+
+    async def main():
+        t = asyncio.create_task(spin())
+        await env.svc.refresh_nodes()
+        await t
+
+    asyncio.run(main())
+    # the loop kept spinning through the 0.4 s probe (>= 3 beats); a probe
+    # that blocks the loop would finish before a single beat lands
+    assert len(beats) >= 3
+    nid = env.svc.fleet.nodes[0].id
+    st = env.svc.node_state(nid)
+    assert st.online and st.free_vram_gb == 30.0

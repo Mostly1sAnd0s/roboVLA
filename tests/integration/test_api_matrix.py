@@ -11,6 +11,7 @@ Last-Event-ID resume, and VRAM budget admission on a 2-slot node
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import time
 
@@ -286,7 +287,7 @@ def test_node_probe_and_agent_scoped_purge(env):
         {"pid": 4242, "name": "python", "vram_gb": 8.0, "agent_spawned": True},
         {"pid": 11, "name": "ninfer-serve", "vram_gb": 10.0, "agent_spawned": False},
     ])
-    env.svc.refresh_nodes()
+    asyncio.run(env.svc.refresh_nodes())
     env.as_teacher()
     # probe: agent healthy, image matches the fleet entry
     r = env.client.post(f"/api/admin/nodes/{ic.NODE}/probe")
@@ -341,7 +342,7 @@ FLEET_2SLOT = ic.FLEET.replace("train_slots: 1", "train_slots: 2")
 def _two_train_slots(env):
     env.svc.fleet = parse_fleet(FLEET_2SLOT)
     env.svc._scheduler = env.svc._build_scheduler()
-    env.svc.refresh_nodes()
+    asyncio.run(env.svc.refresh_nodes())
 
 
 def test_vram_budget_admission_two_slots(env):
@@ -359,7 +360,7 @@ def test_vram_budget_admission_two_slots(env):
     assert env.svc.storage.get_job(j1)["state"] == "running"
     # the probe now reports 30 - 18 GB free
     env.runner.set_vram(12.0)
-    env.svc.refresh_nodes()
+    asyncio.run(env.svc.refresh_nodes())
 
     env.as_student("s07")
     ds2 = env.upload_ready("s07")
@@ -377,7 +378,7 @@ def test_vram_budget_admission_two_slots(env):
         r = env.client.post(f"/api/admin/jobs/{j}/kill")
         assert r.status_code == 200, r.text
     env.runner.set_vram(30.0)
-    env.svc.refresh_nodes()
+    asyncio.run(env.svc.refresh_nodes())
     env.as_student("s01")
     t3 = env.make_ticket("s01")
     j3 = _train(env, "s01", ds1, t3, batch=1)["job_id"]
