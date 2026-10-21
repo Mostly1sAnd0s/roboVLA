@@ -1,6 +1,8 @@
 # Setup, Materials & Pre-Class-1 Checklist
 
-Companion to `lesson-plan.md` (v1.1) and `model-card-review.md`; fleet and console detail lives in `training-console-design.md` v0.4 (authoritative).
+Companion to `lesson-plan.md` (v1.2) and `model-card-review.md`; fleet and console detail lives in `training-console-design.md` v0.5 (authoritative).
+
+**v1.2 (2026-10-21):** §2/§3 rewritten for the v0.5 container architecture (runner image + agent + quadlet; no torch on the console host; model via the agent's `model_download` job) · §7 robot endpoint corrected to the console's `:8501/api/robot/predict` (there is no robot port 8502) · tenancy checklist now manual (design §3: plain-process assistant, no `ninfer.service`) · gamepad ref → design §14 Q3 · §5 end-to-end timing total corrected.
 
 **v1.1 (2026-10-20):** 12 individual students / 1 robot each · launch fleet = **pai1 only** (console host + RTX 5090 32 GB; the 5090 Ti / 4070 Ti / home Strix Halo join later via the admin node page — nothing here assumes them) · LAN-only console access from classroom devices.
 
@@ -12,7 +14,7 @@ Companion to `lesson-plan.md` (v1.1) and `model-card-review.md`; fleet and conso
 | Mecanum rover chassis | 4× mecanum wheels, 24V DC gear motors with encoders, motor driver board (dual H-bridge or 4× single), battery + switch — most students likely reuse existing rovers; line item is if buying new | 150–300 |
 | **Raspberry Pi 3 B** (or 3 B+) | 32-bit OS (armv7l) for ROS 2 Humble; 1 GB RAM is fine — it only runs the data plane (10 Hz JPEG + IK + watchdog) | used/45 |
 | Raspberry Pi Camera Module 2 (IMX219) | 640×480 JPEG @ 10 Hz is trivial for it; V2 works with the modern libcamera stack on Bookworm | 25–30 |
-| USB gamepad (optional) | keyboard is day one; gamepad support lands with the capture app (Class 17) — **open question, design §14 Q4** | 15 |
+| USB gamepad (optional) | keyboard is day one; gamepad support lands with the capture app (Class 17) — **open question, design §14 Q3** | 15 |
 | **HuskyLens** (optional but recommended) | handoff gate / color-target confirmation; USB on the Pi | 60–90 |
 | 2D LiDAR (optional) | e.g., RPLIDAR A1/A2-class for emergency boundary stop; advanced students only | 100–180 |
 | Cones, blue/green target (printable), masking tape | arena + collection fixtures (shared class stock) | 30 |
@@ -32,13 +34,11 @@ Companion to `lesson-plan.md` (v1.1) and `model-card-review.md`; fleet and conso
 
 ## 2. Software stack (pinned versions)
 
-**Console (pai1)** — Ubuntu, NVIDIA driver 615.71 (CUDA 13.4)
-- **uv venv @ Python 3.12** (system Python is 3.14 — do not use it for the training stack)
-- **torch 2.8/2.9 + cu128** — finalized by `gpu_selftest`. **Blackwell sm_120: the repo's old pins (torch 2.2/cu121, flash-attn 2.5.5) do NOT work** → SDPA attention instead of flash-attn unless it builds clean
-- `bitsandbytes` ≥ 0.46 (QLoRA 8-bit), `transformers` pinned after selftest, `peft`, `timm`, `pillow`, `numpy`
-- Console itself: FastAPI + SQLite + SSE (design §4), ~1.5–2k LOC, LAN-bound :8501
-- `openvla` repo cloned at a pinned commit; `openvla/openvla-7b` checkpoint pre-downloaded (~15 GB)
-- systemd: `robovla-console.service` + `ninfer.service` (wraps `~/start-ninfer.sh` for clean stop/start); release windows 07:00–08:30 + overnight
+**pai1 (console + runner)** — Ubuntu, NVIDIA driver 615.71 (CUDA 13.4), podman
+- **Console venv**: bare `uv venv @ Python 3.12` + `uv sync` (system Python is 3.14 — do not use it) → FastAPI + SQLite + SSE (design §4), ~1.5–2k LOC, LAN-bound :8501. **No torch on the console host.**
+- **Runner container** (podman, GPU passthrough, quadlet `robovla-runner.service`): image `robovla-runner-cuda` bakes the pinned training stack — uv @ 3.12, **torch 2.8/2.9 + cu128** (finalized by `gpu_selftest`; **Blackwell sm_120: the repo's old pins torch 2.2/cu121 + flash-attn 2.5.5 do NOT work** → SDPA unless it builds clean), `bitsandbytes` ≥ 0.46 (QLoRA 8-bit), `transformers` pinned after selftest, `peft`, `timm`, `pillow`, `numpy`, `openvla` at a pinned commit. The container runs the **agent API** on :8601 (console-only).
+- `openvla/openvla-7b` checkpoint (~15 GB) downloaded into the node model volume via the agent's `model_download` job (`uv run robovla cli model_download --node pai1`)
+- systemd: `robovla-console.service` + `robovla-runner.service`. **GPU tenancy is manual (design §3):** the 27B assistant stays a plain process via `~/start-ninfer.sh` (no systemd/docker — that verified stop/start *is* the tenancy model); the teacher unloads it before the 07:00–08:30 + overnight windows; **no `ninfer.service`, no console-managed release windows**.
 
 **Pi (ROS 2 side)** — Raspberry Pi OS (32-bit, Bookworm)
 - ROS 2 **Humble** (armv7l builds; do *not* upgrade — later ROS 2 releases dropped 32-bit ARM)
@@ -49,10 +49,11 @@ Companion to `lesson-plan.md` (v1.1) and `model-card-review.md`; fleet and conso
 
 ## 3. Pre-class-1 prep checklist (instructor, 1 week out)
 
-- [ ] pai1 venv built (uv @ 3.12, torch cu128, bnb ≥ 0.46); `openvla` cloned; **model checkpoint (~15 GB) downloaded to local disk** (demo must work on a bad-network day)
-- [ ] `gpu_selftest` passed: load 7.5 B, 8-bit fwd/bwd, `predict_action` on a still image, timings logged — **you must have done M5 yourself before the students** (design Phase 1)
+- [ ] Runner image built (`images/Dockerfile.cuda`); **console venv** (uv @ 3.12 — FastAPI stack only, no torch) + `robovla-console.service` + `robovla-runner.service` (quadlet) installed on pai1; agent container up on :8601
+- [ ] **Model checkpoint (~15 GB) downloaded to the node model volume** via `uv run robovla cli model_download --node pai1` (agent job) — on local disk, so the demo works on a bad-network day
+- [ ] `gpu_selftest` passed **via the agent, inside the container** (`uv run robovla cli gpu_selftest --node pai1`): load 7.5 B, 8-bit fwd/bwd, `predict_action` on a still image, timings logged — **you must have done M5 yourself before the students** (design Phase 1)
 - [ ] Console live on the LAN: auth + **12 student accounts** + teacher, dataset upload/QA, queue, SSE with mock trainer, class board, teacher panel; verified from a classroom device
-- [ ] `ninfer.service` wraps `~/start-ninfer.sh` (clean stop/start, ≥ 20 GB free check); release windows configured (07:00–08:30 + overnight)
+- [ ] GPU tenancy manual (design §3): assistant stop/start via `~/start-ninfer.sh` re-verified (plain process — **no `ninfer.service`**); assistant unloaded before the 07:00–08:30 + overnight windows; board shows free VRAM + holding processes
 - [ ] Isolated 5 GHz SSID live; ping Pi↔pai1 < 20 ms; `iperf3` > 100 Mbps; **static IPs assigned for all 12 Pis** (+ laptops if needed)
 - [ ] All 12 Pis flashed (Bookworm 32-bit + ROS 2 Humble), cameras streaming, encoders verified, **kill-switch wiring reviewed**
 - [ ] Baseline (HuskyLens color-tracking) starter code written and tested by you (it's the Class 13 comparison — students should never meet it for the first time during class)
@@ -85,7 +86,7 @@ Companion to `lesson-plan.md` (v1.1) and `model-card-review.md`; fleet and conso
 | **Standalone capture app** (PySide6: discovery, 10 Hz view, teleop, logging, pre-upload QA, one-click upload, replay check) — students own the QA panel, input, upload, board view | laptop | 17 |
 | Extension prototypes | various | 17 |
 
-**Suggested split of labor:** instructor provides *partial* implementations of `frame_sender/receiver`, `ik_node` skeleton, `action_adapter` skeleton, and the baseline controller — students complete, test, and extend them. Everything console-side (design doc v0.4) is pre-built by the AI coder; the class's job is to **operate and read** the instrument (Classes 9–10), then **own part of it** (the capture app, Class 17).
+**Suggested split of labor:** instructor provides *partial* implementations of `frame_sender/receiver`, `ik_node` skeleton, `action_adapter` skeleton, and the baseline controller — students complete, test, and extend them. Everything console-side (design doc v0.5) is pre-built by the AI coder; the class's job is to **operate and read** the instrument (Classes 9–10), then **own part of it** (the capture app, Class 17).
 
 ## 5. Network & control-loop timing budget (teach this in Class 2, enforce in Class 11)
 
@@ -96,7 +97,7 @@ Console: decode + 224×224 proc  ~ 10 ms
 Console: OpenVLA inference      ~150–300 ms (pai1 32 GB, 8-bit slot)
 LAN: action back                ~  5–20 ms
 -------------------------------
-End-to-end loop                 ~ 0.4–0.7 s  →  ~1.5–2.5 Hz new actions
+End-to-end loop                 ~ 0.3–0.5 s (line items + 10 Hz capture tick + jitter; p95 target < 0.4 s, design §9.5) → ~1.5–2.5 Hz new actions
 ```
 
 Design consequence (the core control lesson): the Pi motor loop runs 50–100 Hz and **holds the last commanded velocity**, slewing (rate-limited) to each new command. Autonomy speed caps: ≤ 0.3 m/s linear, ≤ 1.5 rad/s. Stale action > 500 ms → zero velocity. This makes a 2 Hz stochastic "brain" drive a smooth, safe robot.
@@ -112,7 +113,7 @@ Design consequence (the core control lesson): the Pi motor loop runs 50–100 Hz
 
 ## 7. Demo-day concurrent inference plan (2 slots)
 
-- pai1 serves **2× 8-bit inference slots** (robot port 8502; per-student Bearer token issued by the console). The slot board is visible to the class.
+- pai1 serves **2× 8-bit inference slots** — the runner container hosts the weights; **robots call the console** `http://<pai1-lan-ip>:8501/api/robot/predict` with their per-student Bearer token (the console verifies token + slot lease and proxies to the node agent; design §9.5 — no per-robot node config, no robot-facing 8502). The slot board is visible to the class.
 - **Practice weeks (Classes 11+):** the slot relay gives every robot 30–60 s of model-driven motion in rotation while the class works — all 12 robots cycling, nobody standing around.
 - **Rehearsals (Classes 19–21):** timed runs + talks practiced pipelined, 2 robots at a time.
 - **Demo day (Class 22):** ~6 min/student pipelined — 4-min timed arena run (novelty pose) **while the student gives the 3-min talk**, 1-min Q&A, next robot pre-staged on the second slot. 9 students ≈ 55 min; 12 ≈ 70 min — both fit the 85-minute block.

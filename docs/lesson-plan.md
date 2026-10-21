@@ -1,9 +1,11 @@
 # Capstone Lesson Plan: "Teaching a 7B Robot"
 ## Fine-tuning OpenVLA-7B on a Mecanum Rover — 12 Weeks × 85-Minute Classes
 
-**v1.1 (2026-10-20):** 12 individual students / 1 robot each (no teams) · training-console workflow replaces the TUI build (design doc v0.4) · launch fleet = **pai1 only** (1 trainer, 2 inference slots; more GPUs join later via the console admin page — nothing here depends on them).
+**v1.2 (2026-10-21):** console spec refs bumped to v0.5 · gate M5 cites the smoke job's predict-action probe (design §6) · Class 11 slot-rotation arithmetic corrected.
 
-**Companion docs:** `training-console-design.md` v0.4 (the console spec — the class *runs on* it) · `model-card-review.md` (fact-check of the original proposal) · `setup-and-materials.md` (BOM, network, pre-class-1 checklist)
+**v1.1 (2026-10-20):** 12 individual students / 1 robot each (no teams) · training-console workflow replaces the TUI build (design doc v0.5) · launch fleet = **pai1 only** (1 trainer, 2 inference slots; more GPUs join later via the console admin page — nothing here depends on them).
+
+**Companion docs:** `training-console-design.md` v0.5 (the console spec — the class *runs on* it) · `model-card-review.md` (fact-check of the original proposal) · `setup-and-materials.md` (BOM, network, pre-class-1 checklist)
 
 ---
 
@@ -32,7 +34,7 @@
 | **M2** Command chain | Class 4 | Scripted 3-DoF trajectory (square/circle) executed by robot with no teleop |
 | **M3** Demo logger | Class 6 | Valid episodes (frames + actions + prompt, 10 Hz) **+ official sanity check 1: replay demo open-loop and succeed** |
 | **M4** Dataset | Class 8 | Console dataset **"ready"**: ≥ 100 clean episodes survive curation, QA report read, `norm_stats.json` displayed by the console |
-| **M5** Console + training verified | Class 9 | Student's smoke run completes **and** `predict_action` on a held-out image returns a 7-dim action via the console |
+| **M5** Console + training verified | Class 9 | Student's smoke run completes **and** its predict-action probe returns a 7-dim action on a held-out image (shown in the job detail; design §6) |
 | **M6** Inference slot | Class 11 | Student's adapter served on a slot **+ official sanity check 2: training images reproduce training accuracy** through the live slot |
 | **M7** Autonomy | Class 12 | First supervised closed-loop run completes |
 | **M8** Demo day | Class 22 | Timed arena run in front of audience (fallback: teleop/baseline) |
@@ -151,7 +153,7 @@
 - `0:00–0:10` **Presentation:** the console as the shared lab instrument — upload → QA → ticket → queue → live progress → validation → artifacts → slots → class board. **The queue economy:** 12 students, 1 trainer, no preemption — why the **experiment ticket** (hypothesis → config → prediction, required before submit) is the anti-waste rule, and why the overnight batch is the rhythm (honest queue math on the whiteboard: 12 × ~1.5 h ≈ 2 nights; results land in queue order).
 - `0:10–0:30` **Upload + QA clinic (final):** any dataset not yet **ready** gets fixed and re-uploaded (new version); confirm the "ready" badge + norm stats page for all 12.
 - `0:30–0:35` *Checkpoint 1:* all 12 "ready" badges on the board.
-- `0:35–0:55` **First smoke run (GATE M5):** each student's `smoke` job (1 batch, 2–5 min) — queued, then watched live on their own SSE page (loss, VRAM, ETA, queue position). Pass = run completes **and** `predict_action` on a held-out image returns a 7-dim action via the console. (The stack itself was verified in Phase 1 by `gpu_selftest`; today the class verifies it with their own eyes.)
+- `0:35–0:55` **First smoke run (GATE M5):** each student's `smoke` job (1 batch, 2–5 min) — queued, then watched live on their own SSE page (loss, VRAM, ETA, queue position). Pass = run completes **and** its predict-action probe returns a 7-dim action on a held-out image (visible on the live job page — no slot lease needed; design §6). (The stack itself was verified in Phase 1 by `gpu_selftest`; today the class verifies it with their own eyes.)
 - `0:55–1:00` *Checkpoint 2:* the first smoke to finish posts its action vector + latency to the board.
 - `1:00–1:20` **First full run, overnight:** write the experiment ticket (required), submit with safe defaults (8-bit, rank 32, α 32, lr 5e-4, batch preset — the advanced section stays closed), and the **Queue Wrangler** confirms the overnight submission order. Every student sees their queue position + ETA on the board.
 - `1:20–1:25` **Wrap-up + exit ticket.**
@@ -179,7 +181,7 @@
 - `0:00–0:08` **Presentation:** results so far (class board: best held-out accuracy per student); the slot model (2 slots, claim/release, lease, per-student Pi token); the **closed-loop timing budget** — camera 40 ms + LAN 30 ms + inference 150–300 ms ≈ **0.3–0.5 s per action (~2 Hz effective)**; therefore the Pi runs a 50–100 Hz motor loop that *holds the last commanded velocity* and slews to the new one (this is how a 2 Hz "brain" drives a smooth robot).
 - `0:08–0:30` **Claim slots + wire the Pi:** `autonomous_node` on the Pi: capture → `POST /api/robot/predict` (student's token) → un-normalize with the dataset's `norm_stats` → 3-DoF → IK → motors, with max-velocity caps; stale-action watchdog (500 ms → zero). **Slot relay:** 2 robots live at a time, everyone else wires/debugs — the relay rotation gives every robot 30–60 s of model-driven motion while the class works ("everyone's robot is always moving").
 - `0:30–0:35` *Checkpoint 1:* first robots driving under model control; relay rotation posted on the slot board.
-- `0:35–1:05` **Sanity check 2 (GATE M6):** 10 held-out training images through the *live slot* exactly as the robot would send them (image + prompt → action), compared to the recorded actions (token accuracy / L1) — must reproduce training-level numbers. The 12 rotate through the slots in ~15 min (10 images ≈ 30 s each). The classic gotchas, pre-armed by the instructor: **crop! scaling! sign!** Meanwhile: Pi-side hold/slew tuning.
+- `0:35–1:05` **Sanity check 2 (GATE M6):** 10 held-out training images through the *live slot* exactly as the robot would send them (image + prompt → action), compared to the recorded actions (token accuracy / L1) — must reproduce training-level numbers. The 12 rotate through the slots two at a time — 10 images ≈ 30–45 s per student, so ~4 min of slot time, comfortably inside the 30-min block. The classic gotchas, pre-armed by the instructor: **crop! scaling! sign!** Meanwhile: Pi-side hold/slew tuning.
 - `1:05–1:12` *Checkpoint 2 / M6 test:* M6 pass logged per student (two at a time on the floor; image checks queue through the slot board).
 - `1:12–1:20` **Safety interlock:** HuskyLens target-confirm gate (autonomy only engages after target lock) or LiDAR boundary check — wire in whichever the student has; kill-switch dry run.
 - `1:20–1:25` **Wrap-up + exit ticket.**
