@@ -15,9 +15,11 @@ coverage.xml
 htmlcov/
 
 # local state (the console data dir is runtime state, not source)
-robovla-console/
-robovla/
-robovla-backups/
+# NOTE: root-anchored — a bare `robovla/` pattern was matching src/robovla/
+# (the package) and silently kept the Phase 0 source out of git.
+/robovla-console/
+/robovla/
+/robovla-backups/
 
 # editor/OS
 .DS_Store
