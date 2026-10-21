@@ -185,6 +185,16 @@ class Scheduler:
         self._jobs[job_id] = updated
         return updated
 
+    def run_now(self, job_id: str) -> Job:
+        """Mark a queued job run-now — front of the line after the current
+        completion (no preemption, §3)."""
+        job = self.job(job_id)
+        if job.state != "queued":
+            raise RobovlaError("conflict", f"job {job_id} is {job.state}; run-now is queued-only")
+        updated = replace(job, run_now=True)
+        self._jobs[job_id] = updated
+        return updated
+
     def counts(self, student: str) -> dict[str, int]:
         """Per-student running/queued counts (caps are enforced by the service,
         §8.1 — an active inference slot counts as running: state-based)."""

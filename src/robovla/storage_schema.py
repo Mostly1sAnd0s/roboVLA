@@ -30,12 +30,16 @@ CREATE TABLE IF NOT EXISTS tokens (
     token_id TEXT PRIMARY KEY,
     user_id TEXT NOT NULL REFERENCES users(user_id),
     token_hash TEXT NOT NULL UNIQUE,
+    -- sha256 of the raw secret: the O(1) find path (the argon2 hash stays
+    -- authoritative; §9.8 shown-once tokens are verified hash-then-confirm)
+    token_lookup TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     revoked_at TEXT
 );
 CREATE TABLE IF NOT EXISTS agent_tokens (
     node_id TEXT PRIMARY KEY,
     token_hash TEXT NOT NULL,
+    token_lookup TEXT NOT NULL UNIQUE,
     created_at TEXT NOT NULL,
     rotated_at TEXT
 );
@@ -81,7 +85,11 @@ CREATE TABLE IF NOT EXISTS jobs (
     idempotency_key TEXT UNIQUE,
     created_at TEXT NOT NULL,
     terminal_at TEXT,
-    note TEXT
+    note TEXT,
+    slot_handle TEXT,
+    last_used_at TEXT,
+    predict_probe_json TEXT,
+    run_id TEXT
 );
 CREATE INDEX IF NOT EXISTS jobs_student_state ON jobs (state, node_id);
 CREATE TABLE IF NOT EXISTS artifacts (

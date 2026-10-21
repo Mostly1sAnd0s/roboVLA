@@ -103,6 +103,22 @@ class FakeRunner:
         self._check_online()
         return {"free_gb": self.free_gb, "total_gb": self.total_gb, "procs": list(self.procs)}
 
+    def purge_procs(self, pids: list[int]) -> None:
+        self._check_online()
+        known = {p["pid"] for p in self.procs if p.get("agent_spawned")}
+        bad = [p for p in pids if p not in known]
+        if bad:
+            raise RobovlaError("validation", f"not agent-scoped pids: {bad}")
+        freed = sum(p.get("vram_gb", 0) for p in self.procs if p["pid"] in pids)
+        self.purged_pids = list(pids)
+        self.procs = [p for p in self.procs if p["pid"] not in pids]
+        self.free_gb = min(self.total_gb, self.free_gb + freed)
+
+    def agent_log(self, lines: int = 500) -> str:
+        self._check_online()
+        self.agent_log_lines = lines
+        return "\n".join(f"[agent] line {i}" for i in range(max(1, min(lines, 50)))) + "\n"
+
     # -- jobs ------------------------------------------------------------------------
 
     def submit(self, spec: dict[str, Any]) -> None:

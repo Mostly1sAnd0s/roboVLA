@@ -37,6 +37,15 @@ class Runner(Protocol):
         marks processes the agent launched (orphan-purge scope, §8.2)."""
         ...
 
+    def purge_procs(self, pids: list[int]) -> None:
+        """Kill agent-scoped orphan processes by pid (teacher-confirmed,
+        §8.2). Host-level processes are never touched."""
+        ...
+
+    def agent_log(self, lines: int = 500) -> str:
+        """The agent's own service log, last N lines (§8.2/§8.5)."""
+        ...
+
     # -- jobs -----------------------------------------------------------------
 
     def submit(self, spec: dict[str, Any]) -> None:

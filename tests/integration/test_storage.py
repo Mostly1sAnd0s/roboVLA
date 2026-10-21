@@ -82,12 +82,12 @@ def test_sessions_for_user_lists_active_only(store):
 
 def test_token_shown_once_hashed_at_rest_and_revocable(store):
     store.create_user("s07", "student", "h", at=T0)
-    tid = store.create_token("s07", "hash-abc", at=T0)
-    row = store.token_by_hash("hash-abc")
+    tid = store.create_token("s07", "hash-abc", "lkp-abc", at=T0)
+    row = store.token_by_lookup("lkp-abc")
     assert row is not None and row["user_id"] == "s07" and row["token_id"] == tid
-    assert store.token_by_hash("wrong") is None
+    assert store.token_by_lookup("wrong") is None
     assert store.revoke_token(tid, at=T1) is True
-    assert store.token_by_hash("hash-abc") is None  # revoked tokens stop working
+    assert store.token_by_lookup("lkp-abc") is None  # revoked tokens stop working
     assert store.revoke_token(tid, at=T1) is False  # already revoked
     toks = store.list_tokens("s07")
     assert len(toks) == 1 and toks[0]["revoked_at"] == T1
@@ -97,10 +97,12 @@ def test_token_shown_once_hashed_at_rest_and_revocable(store):
 
 
 def test_agent_token_set_rotate_and_lookup(store):
-    store.set_agent_token("pai1", "hash-1", at=T0)
+    store.set_agent_token("pai1", "hash-1", "lkp-1", at=T0)
     assert store.get_agent_token_hash("pai1") == "hash-1"
-    store.set_agent_token("pai1", "hash-2", at=T1)  # rotation upserts
+    store.set_agent_token("pai1", "hash-2", "lkp-2", at=T1)  # rotation upserts
     assert store.get_agent_token_hash("pai1") == "hash-2"
+    assert store.agent_token_by_lookup("pai1", "lkp-2") == "hash-2"
+    assert store.agent_token_by_lookup("pai1", "lkp-1") is None  # old lookup dies
     assert store.get_agent_token_hash("node2") is None
 
 

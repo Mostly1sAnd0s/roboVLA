@@ -85,6 +85,13 @@ class HttpRunner:
     def vram(self) -> dict[str, Any]:
         return self._request("GET", "/vram")
 
+    def purge_procs(self, pids: list[int]) -> None:
+        self._request("POST", "/vram/purge", json={"pids": pids})
+
+    def agent_log(self, lines: int = 500) -> str:
+        data = self._request("GET", "/log", params={"lines": lines})
+        return data.get("log", "") if isinstance(data, dict) else str(data)
+
     # -- jobs -----------------------------------------------------------------------
 
     def submit(self, spec: dict[str, Any]) -> None:
