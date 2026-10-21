@@ -138,7 +138,7 @@ The node registry **is** the fleet config (§10, `fleet.yaml`) — the admin UI 
 
 | Control | Behavior |
 |---|---|
-| Add node | form: id, label, image tag (`robovla-runner-cuda` \| `-rocm`), LAN IP + agent port (default 8601), agent token (shown once; console stores hash), GPU VRAM, train slots (1–2), infer slots (1–2), quant profile (`bnb8` \| `bf16`), allowed batch (1 \| 4 \| 8 + matching grad-accum), VRAM budget per job type, priority (int, default 0; first-fit order, higher first), student-selectable (default **off**), enabled (default **off**) → **dry-run join probe** (agent `/health`: image tag matches, GPU visible with expected VRAM, disk free ≥ 50 GB, model dir present) → node stays disabled until teacher enables it |
+| Add node | form: id, label, image tag (`robovla-runner-cuda` \| `-rocm`), LAN IP + agent port (default 8601), agent token (shown once; console host env var + agent container env; hash in DB for audit), GPU VRAM, train slots (1–2), infer slots (1–2), quant profile (`bnb8` \| `bf16`), allowed batch (1 \| 4 \| 8 + matching grad-accum), VRAM budget per job type, priority (int, default 0; first-fit order, higher first), student-selectable (default **off**), enabled (default **off**) → **dry-run join probe** (agent `/health`: image tag matches, GPU visible with expected VRAM, disk free ≥ 50 GB, model dir present) → node stays disabled until teacher enables it |
 | Edit node | any field; changes apply at the next scheduling tick; active jobs unaffected (a budget shrinking below a running job completes that job; no new admissions on that node until refit) |
 | Enable / disable | disable: queued jobs requeue to other fitting runners; running jobs fail-fast with checkpoint-resume hint; inference slots drain with client notification (Pi watchdog stops the robot after lease expiry) |
 | Remove node | as disable, then removed from config; its jobs/artifacts remain on disk, flagged |
@@ -199,7 +199,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 - `GET /api/datasets` · `GET /api/datasets/{id}` (status: `uploading|preparing|ready|rejected|failed`)
 - `GET /api/datasets/{id}/qa` (per-episode QA report + summary)
 - `GET /api/datasets/{id}/norm-stats`
-- `POST /api/datasets/{id}/revalidate` (re-run prep after corrections; new version)
+- `POST /api/datasets/{id}/revalidate` (re-run prep after corrections; new version; held-out split stays stable for unchanged content, §5.2)
 - `GET /api/datasets/{id}/episodes/{ep}/frames/{i}.jpg` (browser preview)
 
 ### 9.3 Runs & tickets
@@ -207,9 +207,9 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
   - `POST /api/tickets` `{hypothesis, config_summary, prediction}` → `{ticket_id}` (student-owned, editable until linked)
   - `GET /api/tickets/{id}` · `PUT /api/tickets/{id}`
   - `GET /api/runs/{job_id}/ticket` — linked ticket + outcome field (completed at run end)
-- `POST /api/runs` `{dataset_id, job_type: smoke|train|validate|merge|infer|crosscheck, ticket_id (required for train/smoke: must be own, not yet linked), node_id?: "auto"|<node-id>, config: {rank, alpha, lr, epochs, batch, grad_accum, aug, seed, prompt_template}, run_now?: bool}` → `{job_id, position, eta_s}`
+- `POST /api/runs` `{dataset_id, job_type: smoke|train|validate|merge|infer|crosscheck, ticket_id (required for train — the experiment run; smoke/merge/crosscheck exempt — must be own, not yet linked), node_id?: "auto"|<node-id>, config: {rank, alpha, lr, epochs, batch, grad_accum, aug, seed, prompt_template}, run_now?: bool}` → `{job_id, position, eta_s}`
   - Node selection: `"auto"` (default) ⇒ first-fit across enabled nodes in **priority order (higher first; ties → `fleet.yaml` order)**, admitting only where the **chosen config's VRAM budget fits**; a specific node is accepted for students only if enabled **and** `student_selectable: true` (§8.2) — teacher may name any enabled node; pinned jobs wait on that node only
-  - Validation: dataset `ready`; ticket present + unlinked; per-student caps — if no node fits now, response carries `waiting: "slot"` + earliest ETA (reason: busy vs budget)
+  - Validation: dataset `ready`; ticket present + unlinked (train); per-student caps — if no node fits now, response carries `waiting: "slot"` + earliest ETA (reason: busy vs budget)
 - `GET /api/runs` (own) · `GET /api/runs/{job_id}` (state, config, node, progress, artifacts)
 - `GET /api/runs/queue` (all nodes, all students; position + ETA; feeds the class board)
 - `POST /api/runs/{job_id}/kill` (own queued; teacher: any)
@@ -223,7 +223,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 - `GET /stream/class` — class-board feed (queue, node state, slot board, activity), ≤1 msg/s, all roles.
 
 ### 9.5 Inference (robot path)
-- `POST /api/infer/slots/claim` `{run_id}` (adapter must exist) → creates an **infer job** (first-fit in priority order: infer slot free + free VRAM ≥ infer budget + `student_selectable`/pin rules as §9.3). Response: slot available → 200 `{slot, node_id, endpoint: "http://<console-lan-ip>:8501/api/robot/predict", lease_s}`; none available → 202 `{queued: true, position, eta_s}` (the claim queues like any job; no preemption).
+- `POST /api/infer/slots/claim` `{run_id}` (adapter must exist) → creates an **infer job** (auto first-fit in priority order: infer slot free + free VRAM ≥ infer budget; the claim takes no node param — the teacher pins a specific node via requeue, §9.3). Response: slot available → 200 `{slot, node_id, endpoint: "http://<console-lan-ip>:8501/api/robot/predict", lease_s}`; none available → 202 `{queued: true, position, eta_s}` (the claim queues like any job; no preemption).
 - `GET /api/infer/slots` (all: holder, adapter, node, load)
 - `POST /api/infer/slots/{slot}/release` (= kill the infer job; agent unloads the adapter, VRAM probe)
 - **Robot endpoint (console port 8501, `Authorization: Bearer <student token>`):**
@@ -246,13 +246,16 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 - Accounts: 12 students + teacher (optional observers); argon2id; httpOnly session cookies; passwords never logged.
 - RBAC: student → own datasets/runs/tokens, read queue + class board + slots, claim/release own slot · teacher → everything (§9.7) · observer → board + node state only. Enforced by **one** FastAPI dependency — never per-route.
 - Tokens: per-student Pi tokens, scoped to their datasets/adapters/slots, shown once, hashed at rest, revocable.
-- Agent tokens: per-node pre-shared (console stores a hash; the agent holds it in its env); all console↔agent traffic authenticated; rotation = admin action + host-side restart.
+- Agent tokens: per-node pre-shared — plaintext in the console host env (referenced by `token_ref`; never in `fleet.yaml` or logs) and in the agent container env; argon2 hash in the console DB for audit/rotation. All console↔agent traffic authenticated; rotation = admin action + host-side restart.
 - Network: console binds the campus LAN IP; node agents bind their LAN port (console-only traffic); no public exposure, no tunnel; optional self-signed TLS via reverse proxy; students use classroom devices; **robots talk to the console only**.
 - Uploads: 2 GB cap, chunked, zip-slip-safe, path-sanitized, jpeg/json only.
 - **No shell, ever:** validated JobSpec JSON → fixed argv (inside the agent).
 - Rate limits: login 5/min/IP · uploads 2 concurrent/student · submissions 10/min/student · admin 60/min.
 - Audit: all §8 actions + auth events.
 - (Flagged, out of scope: `infergate` :8317 and `flygym` :8765 on pai1 bind 0.0.0.0 → recommend localhost-only.)
+
+### 9.9 Agent endpoints (console-only; `Authorization: Bearer <agent token>`)
+- `GET /api/agent/datasets/{id}/bundle` — tar of the prepared dataset (sha256 in the response; the agent pulls at dispatch, §5.1). The only agent→console call; everything else is the console polling the agent (jobs/vram/logs, §4).
 
 ## 10. Portability & scalability
 
@@ -263,7 +266,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 - **Node host lifecycle stays host-side.** The console talks to the agent, not the host — it commands jobs, models, and probes; container start/restart, image pull/update, and `nvidia-smi --gpu-reset` are documented teacher one-liners on the host (the `robovla-node` script in the repo). The admin panel shows agent version/health, an "update available" flag, and the exact command.
 - **Per-node hardware profiles** drive all presets (VRAM budgets, quantization, batch, slots) — a new 24 GB node joins as an image + config line + probe; nothing is recompiled or re-pinned globally.
 - **Deploy anywhere:** Ubuntu 22.04/24.04 + any supported accelerator (NVIDIA CUDA or ROCm). Console = bare `uv venv && uv sync` + shipped systemd unit (`robovla-console.service`) on its host (no GPU needed); runner = podman container under a shipped systemd unit (quadlet, `robovla-runner.service`) with GPU passthrough. Provisioning jobs (`model_download` into the model volume, `gpu_selftest`) run at node join, via the agent. The console itself is ~1.5–2k LOC; the agent is a few hundred.
-- **State is portable:** the console's SQLite (WAL) + data dir (`datasets/` + DB) and each node host's data dir (`runs/ artifacts/ models/` under `workdir`) = the entire system state. Rebuild or move = clone repo + restore backup; nightly backup (§8.5) covers the rest (node-host artifacts are collected via the agent).
+- **State is portable:** the console's data dir (`data_dir`: SQLite (WAL) + uploaded/prepared datasets) and each node host's data dir (`runs/ artifacts/ models/` under `workdir`) = the entire system state. On the console host these are **separate directories** (pai1: `robovla-console/` vs `robovla/`) — the pai1 agent pulls its dataset bundle from the console exactly like any other node (local hop; no special case). Rebuild or move = clone repo + restore backup; nightly backup (§8.5) covers the rest (node-host artifacts are collected via the agent).
 
 **Scaling path:**
 
@@ -274,7 +277,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 | Multi-room / multi-school | same console image + different `fleet.yaml`; optional class-code tenancy if two classes share one console. |
 | Bigger / newer VLA models (OFT, FAST, PRIME) | job spec carries model id + processor; same upload/QA/queue/SSE pipeline; new model = new image tag. |
 | Rented cloud box (escape hatch) | same image on a rented host, reachable over a private link the teacher sets up (VPN/tunnel) — the protocol is plain LAN-style HTTP, so nothing else changes. |
-| Console SPOF | rebuild from repo + restore backup < 1 h; episode data also lives on the 12 PIs. |
+| Console SPOF | rebuild from repo + restore backup < 1 h — **running jobs continue** (owned by the agent container, not the console); episode data also lives on the 12 PIs. |
 
 **Operational durability (carried from v0.2 §9):**
 - systemd: `robovla-console.service` on the console host; `robovla-runner.service` (podman quadlet) on each node host.
@@ -303,7 +306,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 
 | Layer | Coverage | Gate |
 |---|---|---|
-| Unit — core | scheduler ordering (incl. run-now, no-preemption, priority + config-aware first-fit: student batch vs node budget, 16 GB node → batch-1 preset, 2-slot admission on 32 GB) · kill/reschedule transition table · ticket-before-run (400 without ticket, 409 if already linked) · QA rules (frame/action mismatch, 10 Hz timing, idle > 2 s, sign flip, jump anomaly) · norm stats + un-normalization round-trip · held-out split determinism (stable across versions of unchanged content) · JobSpec + config schema validation | every PR · CPU · < 60 s |
+| Unit — core | scheduler ordering (incl. run-now, no-preemption, priority + config-aware first-fit: student batch vs node budget, 16 GB node → batch-1 preset, 2-slot admission on 32 GB) · kill/reschedule transition table · ticket-before-run (train: 400 without ticket, 409 if already linked) · QA rules (frame/action mismatch, 10 Hz timing, idle > 2 s, sign flip, jump anomaly) · norm stats + un-normalization round-trip · held-out split determinism (stable across versions of unchanged content) · JobSpec + config schema validation | every PR · CPU · < 60 s |
 | Integration — service (CPU, FakeRunner) | chunked upload (incl. zip-slip payload rejected) → prep → QA gate → ticket → queue admission → SSE (state/metrics/val events, heartbeat, resume) → artifact manifest → robot `predict` with mocked agent + token auth · RBAC (student 403 on others' runs and all `/api/admin`) · idempotency dedup · rate limits · slot claim 202-queue when full · dataset bundle pull (fake agent) · audit-log entry for every admin action | every PR · CPU · < 5 min |
 | Simulated class E2E (CPU) | scripted 12-student scenario: 12 uploads → 12 tickets → 12 submissions (launch config = pai1 only; extended config = +node2/node3 to exercise multi-endpoint first-fit by priority, node pinning, and student-selectable gating) → queue drains in expected order → kill/bump/requeue mid-drain → demo-day 2-slot relay schedule (§7.7) → backup + restore round-trip | nightly + per release |
 | Hardware-gated (GPU) | `gpu_selftest` per node (via the agent, inside the container: torch/CUDA visible, load 7.5 B, 8-bit fwd/bwd, bf16 fwd/bwd where it fits, `predict_action` on held-out images, 10-step QLoRA) · `home_selftest` (self-contained dev lab, ROCm gfx1151: `torch.cuda.is_available`, bf16 GEMM benchmark, load + predict, 10-step bf16 fwd/bwd — no bnb) | manual · node join + stack changes |
@@ -332,7 +335,7 @@ Base URL: `http://<console-lan-ip>:8501` (console — the only endpoint robots a
 | Demo-day 12-robot concurrency | 5 inference slots + pipelined relay (§7.7) — all robots cycling continuously |
 | Agent dispatch failure / node death | Fail-fast, auto-reschedule on next runner, checkpoint resume (§10) |
 | Zombie VRAM | Agent reaps its job processes; container stop frees the GPU; post-job probe + agent-scoped purge (§8.2) |
-| Single-host (console) SPOF | Rebuild from repo + restore backup < 1 h; episode data also on the 12 PIs |
+| Single-host (console) SPOF | Rebuild from repo + restore backup < 1 h — running jobs continue (agent-owned, §10); episode data also on the 12 PIs |
 | 12 robots in one room (practice weeks) | 4 sub-arenas × 3 students, zone rotation (see lesson plan) |
 | Config drift (fleet.yaml vs. reality) | Single schema + CI validation + join probes + hot reload revalidates queued jobs |
 | AI coder implementing from this doc | §11 TDD contract + test matrix are the acceptance criteria; every admin action = endpoint + audit + test |
@@ -351,6 +354,7 @@ console:
   bind: 0.0.0.0            # on pai1; students reach via LAN IP; LAN-only by placement
   port: 8501
   tls: false               # optional self-signed via reverse proxy
+  data_dir: /home/adam/robovla-console   # console state (DB + uploaded datasets), separate from node workdirs
   session_ttl_h: 12
   limits:
     student:
@@ -407,7 +411,7 @@ nodes:
 # (console + agent + model, never exposed) for Phase 0 integration / home_selftest.
 ```
 
-Notes: **pai1 is the only enabled node at launch**; node2/node3 are verified inventory, disabled until they come online — adding them later is an admin-page operation (install agent → add node → probe → enable, §8.2), no code or redeploy. The home 8060S is intentionally absent: off-LAN, not a cluster node — it runs the same image as a self-contained dev lab (§1). The 27B assistant on pai1 (~29.5 GB) is **not** console-managed (§3): the teacher unloads it before training/inference windows; the board shows free VRAM. `train_slots: 1` everywhere is the §3 default; the teacher raises a 32 GB node to 2 via the admin lever (reduced-batch preset + budget guard apply). `priority` = first-fit order (higher first; ties → file order). `student_selectable` (default false) controls whether students can name a node at submission (§9.3). `token_ref` = per-node agent token (shown once at node add; console stores a hash, the agent holds it in env). Placeholder IPs are filled in at wiring time (§14 Q1) — code never hardcodes them.
+Notes: **pai1 is the only enabled node at launch**; node2/node3 are verified inventory, disabled until they come online — adding them later is an admin-page operation (install agent → add node → probe → enable, §8.2), no code or redeploy. The home 8060S is intentionally absent: off-LAN, not a cluster node — it runs the same image as a self-contained dev lab (§1). The 27B assistant on pai1 (~29.5 GB) is **not** console-managed (§3): the teacher unloads it before training/inference windows; the board shows free VRAM. `train_slots: 1` everywhere is the §3 default; the teacher raises a 32 GB node to 2 via the admin lever (reduced-batch preset + budget guard apply). `priority` = first-fit order (higher first; ties → file order). `student_selectable` (default false) controls whether students can name a node at submission (§9.3). `token_ref` = env var name on the console host holding the per-node agent token (shown once at node add; the same plaintext is in the agent container env; argon2 hash in the console DB for audit/rotation — plaintext never in `fleet.yaml` or logs). Placeholder IPs are filled in at wiring time (§14 Q1) — code never hardcodes them.
 
 ## Appendix B — JobSpec JSON (the single contract)
 
@@ -485,6 +489,7 @@ roboVLA/
 │   ├── integration/             # service + FakeRunner — every PR, < 5 min
 │   ├── e2e_class/               # scripted 12-student scenario — nightly
 │   └── hardware/                # gpu_selftest / home_selftest / robot — GPU_TESTS=1
+├── robovla-node                 # host-side script: install/update/restart the agent container (§8.2, §10)
 ├── fleet.yaml                   # the fleet (§10 / Appendix A)
 ├── systemd/robovla-console.service
 ├── systemd/robovla-runner.service   # per node: podman quadlet wrapping the runner container
