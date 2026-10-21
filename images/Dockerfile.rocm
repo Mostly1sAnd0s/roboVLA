@@ -49,10 +49,15 @@ RUN uv pip install \
         timm pillow numpy pyyaml huggingface-hub \
     && uv pip install /opt/robovla
 
-ARG OPENVLA_REF=main
-RUN git clone --depth 1 --branch "${OPENVLA_REF}" \
-        https://github.com/openvla/openvla /opt/openvla \
-    && uv pip install /opt/openvla
+# Pinned openvla code (Phase 1 SHA — not pip-installed: `import prismatic`
+# drags draccus + tensorflow; the engine uses the vendored images/vla_compat.py
+# + pure token math. The clone is for the crosscheck job, whose rework lands
+# at node join (Phase 1, §12) with the official stack's dependencies.)
+ARG OPENVLA_SHA=c8f03f48af692657d3060c19588038c7220e9af9
+RUN git init /opt/openvla \
+    && git -C /opt/openvla fetch --depth 1 \
+        https://github.com/openvla/openvla "${OPENVLA_SHA}" \
+    && git -C /opt/openvla checkout FETCH_HEAD
 
 COPY images/bin /opt/robovla/bin
 RUN chmod +x /opt/robovla/bin/robovla_job /opt/robovla/bin/finetune

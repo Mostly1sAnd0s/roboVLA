@@ -6,11 +6,27 @@
 # the standard layout — the quadlet (systemd/robovla-runner.service) does
 # the mounting + GPU passthrough.
 #
-# PROVISIONAL stack pins: torch/transformers/peft/openvla are finalized at
-# the first gpu_selftest (Phase 1, §12) — "the image tag is pinned per node
-# in fleet.yaml; new pin = new tag + selftest at node join" (§6). uv @
-# Python 3.12, torch cu128 (Blackwell sm_120), bnb >= 0.46, SDPA (flash-attn
-# only if it builds clean for sm_120).
+# FINALIZED stack pins (Phase 1, 2026-10-21 — the host65/RTX 4070 sm_89
+# silicon probe: bnb8 load 303 s / 7.85 GB on-GPU, fwd+bwd, 1 QLoRA step,
+# generate(7) + decode all pass):
+#   torch 2.9.0+cu128 — cu128 also carries the sm_120 (Blackwell) kernels;
+#   torchvision 0.24.0+cu128 MUST install in the SAME command as torch —
+#   a separate PyPI resolve floats both to the latest (2.14+cu130) and
+#   silently breaks the pin (caught on host65). The Blackwell leg (pai1,
+#   RTX 5090) is still unverified: new pin = new tag + gpu_selftest (§6).
+#   transformers 4.51.3 / peft 0.14.0 / bitsandbytes 0.50.2 — the official
+#   repo's own pins are older (4.40.1/0.11.1/2.2.0); the custom-code model
+#   loads + trains clean on these (the probe's version-check warning is
+#   benign).
+#   timm 0.9.10 — modeling_prismatic.py HARD-CHECKS timm against
+#   {0.9.10, 0.9.11, 0.9.12, 0.9.16}; an unpinned timm (1.x) breaks load.
+#
+# The openvla CODE is CLONED at a PINNED SHA (not pip-installed): the
+# engine uses the vendored prompt builder (images/vla_compat.py) + pure
+# token math, because `import prismatic` drags draccus + tensorflow (via
+# prismatic.vla.datasets). The clone exists for the crosscheck job, whose
+# rework against the current official finetune.py lands at node join
+# (Phase 1, §12 — it brings the official stack's own dependencies then).
 #
 # Build (from the repo root):
 #   podman build -t robovla-runner-cuda:2026.10 -f images/Dockerfile.cuda .
@@ -37,17 +53,20 @@ COPY src /opt/robovla/src
 COPY agent /opt/robovla/agent
 COPY images /opt/robovla/images
 RUN uv pip install \
-        torch==2.9.0+cu128 --index-url https://download.pytorch.org/whl/cu128 \
-        transformers==4.51.3 peft==0.14.0 "bitsandbytes>=0.46" \
-        timm pillow numpy pyyaml huggingface-hub \
+        torch==2.9.0+cu128 torchvision==0.24.0+cu128 \
+            --index-url https://download.pytorch.org/whl/cu128 \
+    && uv pip install \
+        transformers==4.51.3 peft==0.14.0 bitsandbytes==0.50.2 \
+        timm==0.9.10 pillow numpy pyyaml huggingface-hub \
     && uv pip install /opt/robovla
 
-# Pinned openvla model code (PROVISIONAL commit — verified at gpu_selftest;
-# the official finetune.py (crosscheck) comes from this clone).
-ARG OPENVLA_REF=main
-RUN git clone --depth 1 --branch "${OPENVLA_REF}" \
-        https://github.com/openvla/openvla /opt/openvla \
-    && uv pip install /opt/openvla
+# Pinned openvla code (Phase 1 SHA — the probe verified every touchpoint
+# against it; re-pin = new SHA + new tag + gpu_selftest at node join).
+ARG OPENVLA_SHA=c8f03f48af692657d3060c19588038c7220e9af9
+RUN git init /opt/openvla \
+    && git -C /opt/openvla fetch --depth 1 \
+        https://github.com/openvla/openvla "${OPENVLA_SHA}" \
+    && git -C /opt/openvla checkout FETCH_HEAD
 
 # Fixed-argv entrypoints (python scripts — never a shell)
 COPY images/bin /opt/robovla/bin

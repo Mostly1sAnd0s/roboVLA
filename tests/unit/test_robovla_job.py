@@ -170,6 +170,50 @@ def test_probe_from_bins_roundtrip():
         assert b == pytest.approx(o, abs=1.0 / 255 + 1e-9)  # one bin of slack
 
 
+# -- Phase 1: the official action-token mapping (pure; probe-verified on silicon) --
+
+
+def test_norm_to_bin_edges_and_floor():
+    # floor, not round (the official digitize semantics): 0.5 -> 127, not 128
+    assert engine.norm_to_bin(0.0) == 0
+    assert engine.norm_to_bin(1.0) == 255
+    assert engine.norm_to_bin(0.5) == 127
+    assert engine.norm_to_bin(0.5 + 1.0 / 255) == 128
+    assert engine.norm_to_bin(-9.0) == 0 and engine.norm_to_bin(9.0) == 255
+    # the exact round-trip the engine relies on (float-safe for all 256 bins)
+    for b in range(256):
+        assert engine.norm_to_bin(b / 255.0) == b
+
+
+def test_token_id_roundtrip_and_clamp():
+    V = 32000  # the openvla-7b vocab (Llama-2-7b-hf)
+    for b in range(256):
+        tid = engine.norm_to_token_id(b / 255.0, V)
+        assert engine.token_id_to_bin(tid, V) == b
+    # the action tokens are the last 256 vocab tokens
+    assert engine.norm_to_token_id(1.0, V) == V - 256
+    assert engine.norm_to_token_id(0.0, V) == V - 1
+    # out-of-range ids clamp to the edge bins (the official decode clipping)
+    assert engine.token_id_to_bin(0, V) == 255
+    assert engine.token_id_to_bin(V, V) == 0
+
+
+def test_empty_token_constant():
+    # the "" token id — the official predict_action hardcodes it; the Phase 1
+    # probe verified decode([29871]) == "" (tok("") is NOT a derivation)
+    assert engine.EMPTY_TOKEN_ID == 29871
+
+
+def test_human_msg_extraction():
+    from robovla.core.spec import DEFAULT_PROMPT_TEMPLATE
+    # canonical template -> the bare human message (the builder re-wraps)
+    assert engine._human_msg(DEFAULT_PROMPT_TEMPLATE) == \
+        "What action should the robot take to {task}?"
+    # non-canonical (student-custom) templates pass through as-is
+    custom = "Please tell me the action for {task}."
+    assert engine._human_msg(custom) == custom
+
+
 # -- crosscheck wrapper: spec -> official finetune argv ----------------------------
 
 

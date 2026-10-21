@@ -34,10 +34,11 @@ def _err(message: str) -> int:
     return 1
 
 
-def _load_engine():
-    """The engine (lazy by design: its stack imports happen at first use)."""
-    from images import engine  # noqa: PLC0415  (the lazy stack boundary)
-    return engine
+def _load_engine_jobs():
+    """The job entrypoints (lazy by design: the engine's stack imports happen
+    at first use)."""
+    from images import engine_jobs  # noqa: PLC0415  (the lazy stack boundary)
+    return engine_jobs
 
 
 def dispatch(spec: dict, spec_path: str | None = None) -> int:
@@ -59,7 +60,7 @@ def dispatch(spec: dict, spec_path: str | None = None) -> int:
         raise RobovlaError("validation", f"unhandled job type: {t!r}")
     if spec_path is None:
         raise RobovlaError("internal", "dispatch requires the spec path")
-    return _load_engine().run_job(spec, spec_path)  # lazy boundary
+    return _load_engine_jobs().run_job(spec, spec_path)  # lazy boundary
 
 
 def main(argv: list[str] | None = None) -> int:
