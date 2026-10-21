@@ -283,6 +283,12 @@ class ConsoleService:
 
     async def _apply_view(self, row: dict[str, Any], view: dict[str, Any]) -> None:
         job_id, state = row["job_id"], view["state"]
+        if state == "queued":
+            # The agent is still pulling the bundle / starting the process
+            # (§5.1: the pull happens at dispatch, inside the agent). Dispatch
+            # is committed (the job is running on the console); just wait —
+            # pull failures arrive as a terminal "failed" view.
+            return
         if state == "running":
             for m in view.get("metrics", []):
                 self.bus.publish(job_id, "metrics", m)

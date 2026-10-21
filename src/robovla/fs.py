@@ -123,7 +123,61 @@ def clear_chunks(data_dir: str | Path, dataset_id: str) -> None:
                 p.unlink()
 
 
-# --- zip-slip-safe extraction --------------------------------------------------
+# --- safe bundle extraction (tar) — agent-pull side of the same seam ---------------
+
+
+def _tar_is_link(info: "tarfile.TarInfo") -> bool:
+    return info.issym() or info.islnk() or (getattr(info, "isdev", lambda: False)())
+
+
+def safe_extract_tar(blob: bytes, dest: Path) -> list[Path]:
+    """Extract a dataset bundle tar(.gz) into ``dest`` (tar-slip-safe).
+
+    The agent side of the same seam as :func:`safe_extract_zip` (§5.1/§9.9):
+    the console ships a tar.gz of a *ready* dataset, the agent pulls and
+    extracts it into its workdir. Rejects the same classes of malicious
+    entry as the zip path: absolute paths, ``..`` traversal, symlink/
+    hardlink/device entries, NUL bytes, and any extension other than
+    jpeg/json. Returns the written files.
+    """
+    dest = dest.resolve()
+    dest.mkdir(parents=True, exist_ok=True)
+    try:
+        tf = tarfile.open(fileobj=io.BytesIO(blob), mode="r:*")
+    except (tarfile.TarError, OSError):
+        _fail("bundle is not a valid tar archive")
+    written: list[Path] = []
+    with tf:
+        for info in tf.getmembers():
+            name = info.name
+            if "\x00" in name:
+                _fail(f"refusing entry with NUL byte: {name!r}")
+            if name.startswith("/"):
+                _fail(f"tar-slip: absolute path {name!r}")
+            if ".." in Path(name).parts:
+                _fail(f"tar-slip: '..' traversal in {name!r}")
+            if _tar_is_link(info):
+                _fail(f"refusing {'symlink' if info.issym() else 'link'} entry {name!r}")
+            target = (dest / name).resolve()
+            if dest != target and dest not in target.parents:
+                _fail(f"tar-slip: entry {name!r} escapes the dataset directory")
+            if info.isdir():
+                target.mkdir(parents=True, exist_ok=True)
+                continue
+            ext = target.suffix.lower()
+            if ext not in ALLOWED_EXTS:
+                _fail(f"refusing entry {name!r}: only jpeg/json files are allowed")
+            src = tf.extractfile(info)
+            if src is None:
+                continue
+            target.parent.mkdir(parents=True, exist_ok=True)
+            with open(target, "wb") as out:
+                out.write(src.read())
+            written.append(target)
+    return written
+
+
+# --- safe zip extraction (upload side) ---------------------------------------------
 
 
 def _is_symlink(info: zipfile.ZipInfo) -> bool:
@@ -151,6 +205,10 @@ def safe_extract_zip(blob: bytes, dest: Path) -> list[Path]:
             _fail(f"refusing symlink entry {name!r}")
         if "\x00" in name:
             _fail(f"refusing entry with NUL byte: {name!r}")
+        if name.startswith("/"):
+            _fail(f"zip-slip: absolute path {name!r}")
+        if ".." in Path(name).parts:
+            _fail(f"zip-slip: '..' traversal in {name!r}")
         target = (dest / name).resolve()
         if dest != target and dest not in target.parents:
             _fail(f"zip-slip: entry {name!r} escapes the dataset directory")

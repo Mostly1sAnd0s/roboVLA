@@ -24,6 +24,7 @@ from robovla.fs import (
     clear_chunks,
     make_bundle,
     resize_frames,
+    safe_extract_tar,
     safe_extract_zip,
     scan_dataset,
     write_chunk,
@@ -199,3 +200,74 @@ def test_episode_scan_rejects_mixed_tasks(tmp_path):
     safe_extract_zip(buf2.getvalue(), tmp_path / "ds")
     with pytest.raises(RobovlaError, match="mixes tasks"):
         scan_dataset(tmp_path / "ds" / "episodes")
+
+
+# --- safe tar extraction (agent-pull seam, §9.9) -------------------------------------
+
+
+def _tar_bytes(entries: dict[str, bytes | None]) -> bytes:
+    """Build a tar.gz; ``None`` value = directory."""
+    import tarfile
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        for name, data in entries.items():
+            info = tarfile.TarInfo(name)
+            if data is None:
+                info.type = tarfile.DIRTYPE
+                tf.addfile(info)
+            else:
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+def _link_tar(name: str, linkname: str) -> bytes:
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tf:
+        info = tarfile.TarInfo(name)
+        info.type = tarfile.SYMTYPE
+        info.linkname = linkname
+        tf.addfile(info)
+    return buf.getvalue()
+
+
+def test_tar_roundtrip_matches_zip_contents(tmp_path):
+    src = dataset_root(tmp_path, DS)
+    safe_extract_zip(_episode_zip(tmp_path), src)
+    size, _ = make_bundle(tmp_path, DS, tmp_path / "b.tar.gz")
+    dest = tmp_path / "node" / "datasets"
+    written = safe_extract_tar((tmp_path / "b.tar.gz").read_bytes(), dest)
+    assert size > 0
+    # same episode lands at workdir/datasets/<sanitized>/episodes/...
+    root = dest / sanitize_dataset_id(DS)
+    assert (root / "episodes" / "ep_0000" / "episode.json").is_file()
+    assert any(p.suffix == ".json" for p in written)
+
+
+def test_tar_slip_traversal_rejected(tmp_path):
+    blob = _tar_bytes({"episodes/../evil.json": b"{}"})
+    with pytest.raises(RobovlaError, match="tar-slip"):
+        safe_extract_tar(blob, tmp_path / "ds")
+
+
+def test_tar_slip_absolute_path_rejected(tmp_path):
+    blob = _tar_bytes({"/etc/evil.json": b"{}"})
+    with pytest.raises(RobovlaError, match="tar-slip"):
+        safe_extract_tar(blob, tmp_path / "ds")
+
+
+def test_tar_symlink_entry_rejected(tmp_path):
+    with pytest.raises(RobovlaError, match="symlink"):
+        safe_extract_tar(_link_tar("episodes/ep_0000/link.json", "/etc/passwd"),
+                         tmp_path / "ds")
+
+
+def test_tar_bad_extension_rejected(tmp_path):
+    blob = _tar_bytes({"episodes/ep_0000/payload.py": b"import os"})
+    with pytest.raises(RobovlaError, match="only jpeg/json"):
+        safe_extract_tar(blob, tmp_path / "ds")
+
+
+def test_tar_bad_archive_rejected(tmp_path):
+    with pytest.raises(RobovlaError, match="not a valid tar"):
+        safe_extract_tar(b"this is not a tar", tmp_path / "ds")
