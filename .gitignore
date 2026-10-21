@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+
+# uv / venv (per design: console venv is uv-managed, not committed)
+.venv/
+
+# test/coverage artifacts
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# local state (the console data dir is runtime state, not source)
+robovla-console/
+robovla/
+robovla-backups/
+
+# editor/OS
+.DS_Store
+.idea/
+.vscode/

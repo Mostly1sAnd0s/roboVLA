@@ -1,0 +1,30 @@
+# roboVLA — OpenVLA-7B fine-tuning control plane (training console).
+# Design spec: docs/training-console-design.md (v0.5.1). uv-managed.
+[project]
+name = "robovla"
+version = "0.1.0"
+description = "Web-based training console for fine-tuning OpenVLA-7B on the campus LAN (high-school robotics capstone)"
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",  # fleet.yaml parsing (seam: text in -> config out; core stays pure)
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/robovla"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+markers = [
+    "unit: pure core — every PR, CPU, < 60 s",
+    "integration: service + FakeRunner — every PR, CPU, < 5 min",
+    "e2e: scripted 12-student scenario — nightly",
+    "hardware: GPU_TESTS=1 (gpu_selftest / home_selftest / robot)",
+]

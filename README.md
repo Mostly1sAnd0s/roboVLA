@@ -13,6 +13,7 @@ Fine-tuning **OpenVLA-7B** (a 7.5B vision–language–action model) for a high-
 
 ## Status (2026-10-20)
 
-- **Design:** v0.3 complete and frozen for implementation (§8 admin controls, §9 API schema, §10 portability/scalability, §11 TDD/DRY, Appendices A–C).
+- **Design:** v0.5.1 complete and frozen for implementation (§8 admin controls, §9 API schema, §10 portability/scalability, §11 TDD/DRY, Appendices A–C).
+- **Implementation (2026-10-21):** Phase 0 core **done, test-first per §11**: `robovla/core` (errors, states, spec = single JobSpec contract + preset catalog, config = fleet.yaml schema + diff, budgets, norm_stats, split, qa, ticket, audit, scheduler) + shared `robovla/episode.py`. 314 unit tests, 99% line coverage (target ≥95%), suite < 1 s on CPU (`uv run pytest -m "not hardware"`), all files ≤ 500 lines, no I/O in core, no node names/IPs in code. Next: seams (`storage`/`fs`/`runner` + FastAPI app + SSE + UI) against `FakeRunner`.
 - **Fleet (verified):** pai1 (RTX 5090 32 GB, hosts the 27B assistant via `ninfer-serve`), campus 5090 Ti + 4070 Ti (wiring pending), home Strix Halo 8060S dev runner. GTX 1070 excluded.
-- **Implementation:** not started. Phase 0 (CPU-side, assistant stays loaded) awaits green light: uv venv @ 3.12 + torch cu128 provisioning, console scaffold, auth, dataset upload/QA, scheduler + FakeRunner, SSE, 12 student accounts.
+- **Implementation (rest of Phase 0):** console scaffold (auth, users, nodes, upload + prep/QA, tickets, queue, SSE, UI, LAN bind) against local agent + FakeRunner; admin surface §9.7; systemd units; 12 accounts — pending.
