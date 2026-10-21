@@ -12,7 +12,13 @@ import random
 import pytest
 
 from robovla.core.errors import RobovlaError
-from robovla.core.split import HELD_OUT_FRACTION, held_out_set, split
+from robovla.core.split import (
+    CROSSCHECK_N,
+    HELD_OUT_FRACTION,
+    crosscheck_subset,
+    held_out_set,
+    split,
+)
 
 
 def _ids(n, prefix="ep"):
@@ -111,3 +117,62 @@ class TestSplitResult:
         ids = _ids(40)
         result = split(ids, "s06", "task-f")
         assert result.held_out_set == held_out_set(ids, "s06", "task-f")
+
+
+class TestCrosscheckSubset:
+    """crosscheck_subset (§6): the deterministic 50-episode subset the
+    crosscheck job runs the official engine on — same episodes every re-run,
+    seeded per student + dataset version (per-episode bucketing, so other
+    episodes present never reshuffle the choice)."""
+
+    def test_default_n_is_50(self):
+        assert CROSSCHECK_N == 50
+
+    def test_deterministic(self):
+        ids = _ids(100)
+        assert crosscheck_subset(ids, "s01", "s01/task-a/v1") == \
+            crosscheck_subset(ids, "s01", "s01/task-a/v1")
+
+    def test_size_and_membership(self):
+        ids = _ids(100)
+        sub = crosscheck_subset(ids, "s01", "s01/task-a/v1")
+        assert len(sub) == 50
+        assert set(sub) <= set(ids)
+        assert len(set(sub)) == 50  # no duplicates
+        # input order preserved (a subsequence of the input)
+        it = iter(ids)
+        assert all(e in it for e in sub)
+
+    def test_seed_by_student(self):
+        ids = _ids(200)
+        a = set(crosscheck_subset(ids, "s01", "s01/task-a/v1"))
+        b = set(crosscheck_subset(ids, "s02", "s01/task-a/v1"))
+        assert a != b  # different student -> different subset
+        # but not fully disjoint either (50 of 200 each)
+        assert len(a & b) > 0
+
+    def test_seed_by_dataset_version(self):
+        ids = _ids(200)
+        v1 = set(crosscheck_subset(ids, "s01", "s01/task-a/v1"))
+        v2 = set(crosscheck_subset(ids, "s01", "s01/task-a/v2"))
+        assert v1 != v2
+
+    def test_stable_under_membership_change(self):
+        ids = _ids(100)
+        full = crosscheck_subset(ids, "s01", "s01/task-a/v1")
+        # keep all 50 chosen + exactly 40 others (input order): unchanged
+        non_sub = [e for e in ids if e not in full][:40]
+        kept = [e for e in ids if e in full or e in set(non_sub)]
+        assert len(kept) == 90
+        assert crosscheck_subset(kept, "s01", "s01/task-a/v1") == full
+
+    def test_fewer_than_n_returns_all(self):
+        ids = _ids(30)
+        assert crosscheck_subset(ids, "s01", "s01/task-a/v1") == tuple(ids)
+
+    def test_invalid(self):
+        ids = _ids(5)
+        for args in ((ids, "", "s01/t/v1"), (ids, "s01", ""),
+                     (ids, "s01", "s01/t/v1", 0), (ids, "s01", "s01/t/v1", -3)):
+            with pytest.raises(RobovlaError):
+                crosscheck_subset(*args)

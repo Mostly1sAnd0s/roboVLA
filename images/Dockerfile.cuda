@@ -1,0 +1,60 @@
+# robovla-runner-cuda — the per-node runner image (design §6, §10).
+#
+# The container is the only hardware boundary: it runs the agent on :8601
+# and launches job processes with a FIXED argv (no shell, ever). The host
+# bind-mounts its workdir (datasets/runs/artifacts) and model volume into
+# the standard layout — the quadlet (systemd/robovla-runner.service) does
+# the mounting + GPU passthrough.
+#
+# PROVISIONAL stack pins: torch/transformers/peft/openvla are finalized at
+# the first gpu_selftest (Phase 1, §12) — "the image tag is pinned per node
+# in fleet.yaml; new pin = new tag + selftest at node join" (§6). uv @
+# Python 3.12, torch cu128 (Blackwell sm_120), bnb >= 0.46, SDPA (flash-attn
+# only if it builds clean for sm_120).
+#
+# Build (from the repo root):
+#   podman build -t robovla-runner-cuda:2026.10 -f images/Dockerfile.cuda .
+
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH"
+
+# uv + Python 3.12 (the image's venv owns the whole stack, §6)
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
+    && uv python install 3.12 \
+    && uv venv --python 3.12 /opt/venv
+
+# The console wheel (robovla + agent packages) + the images package
+# (job program / engine / crosscheck wrapper — not in the wheel).
+COPY pyproject.toml README.md /opt/robovla/
+COPY src /opt/robovla/src
+COPY agent /opt/robovla/agent
+COPY images /opt/robovla/images
+RUN uv pip install \
+        torch==2.9.0+cu128 --index-url https://download.pytorch.org/whl/cu128 \
+        transformers==4.51.3 peft==0.14.0 "bitsandbytes>=0.46" \
+        timm pillow numpy pyyaml huggingface-hub \
+    && uv pip install /opt/robovla
+
+# Pinned openvla model code (PROVISIONAL commit — verified at gpu_selftest;
+# the official finetune.py (crosscheck) comes from this clone).
+ARG OPENVLA_REF=main
+RUN git clone --depth 1 --branch "${OPENVLA_REF}" \
+        https://github.com/openvla/openvla /opt/openvla \
+    && uv pip install /opt/openvla
+
+# Fixed-argv entrypoints (python scripts — never a shell)
+COPY images/bin /opt/robovla/bin
+RUN chmod +x /opt/robovla/bin/robovla_job /opt/robovla/bin/finetune
+
+# The agent owns the process lifecycle; :8601 is console-only traffic.
+# Host mounts (podman quadlet): <host workdir> -> /data, <model volume> -> /models
+WORKDIR /data
+EXPOSE 8601
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent.server"]

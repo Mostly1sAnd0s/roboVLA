@@ -1,0 +1,11 @@
+#!/opt/venv/bin/python
+# The job program entrypoint (the agent's fixed argv:
+#   /opt/venv/bin/python /opt/robovla/bin/robovla_job --spec <spec.json>)
+# No shell: this is a python script that puts the images package on
+# sys.path and execs the program.
+import sys
+
+sys.path.insert(0, "/opt/robovla")
+from images.robovla_job import main  # noqa: E402
+
+sys.exit(main())

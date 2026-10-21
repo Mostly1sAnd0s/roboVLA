@@ -1,0 +1,11 @@
+#!/opt/venv/bin/python
+# The crosscheck entrypoint (the agent's fixed argv routes type:crosscheck
+# here — NOT robovla_job): it validates the spec, materializes the
+# deterministic 50-episode subset, and execs the OFFICIAL openvla
+# finetune.py with a fixed argv (the house proc seam — no shell, ever).
+import sys
+
+sys.path.insert(0, "/opt/robovla")
+from images.crosscheck_finetune import main  # noqa: E402
+
+sys.exit(main())

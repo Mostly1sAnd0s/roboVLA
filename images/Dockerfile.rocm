@@ -1,0 +1,64 @@
+# robovla-runner-rocm — the home dev-lab runner image (design §1, §6).
+#
+# Home Strix Halo (8060S, gfx1151, 128 GB unified): OFF-CAMPUS, so it is not
+# a cluster node (roboVLA is LAN-only). It runs this same image as a
+# self-contained dev lab on the home LAN (console + agent + model, never
+# exposed) for Phase 0 integration / home_selftest.
+#
+# Home preset: **bf16, no quant, no bitsandbytes** (ROCm) — 128 GB unified
+# memory holds the 7.5 B model in bf16 with headroom (§6 per-runner presets).
+#
+# PROVISIONAL: gfx1151 is not in the official ROCm wheel matrix, so the
+# torch wheel here is a CUSTOM gfx1151 build (rocm/pytorch nightly + the
+# gfx1151 hipBLASLt workaround, or the AMD-internal wheel the home lab
+# maintains). The stack pins (torch-rocm, transformers, openvla) are
+# finalized at the first home_selftest, exactly as the CUDA image is at the
+# first gpu_selftest (§12 Phase 1).
+#
+# Build (from the repo root, on the home machine — it needs the custom
+# torch-rocm wheel, TORCH_ROCM_WHEEL, in ./wheels):
+#   podman build -t robovla-runner-rocm:2026.10 \
+#       --build-arg TORCH_ROCM_WHEEL=./wheels/torch-*.whl \
+#       -f images/Dockerfile.rocm .
+
+FROM rocm/dev-ubuntu-22.04:6.2.4-4
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH" \
+    HSA_ENABLE_SDMA=1 \
+    HSA_OVERRIDE_GFX_VERSION=11.5.1   # gfx1151 (Strix Halo), PROVISIONAL
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
+    && uv python install 3.12 \
+    && uv venv --python 3.12 /opt/venv
+
+COPY pyproject.toml README.md /opt/robovla/
+COPY src /opt/robovla/src
+COPY agent /opt/robovla/agent
+COPY images /opt/robovla/images
+
+ARG TORCH_ROCM_WHEEL=./wheels/torch-gfx1151.whl
+RUN uv pip install \
+        "${TORCH_ROCM_WHEEL}" \
+        transformers==4.51.3 peft==0.14.0 \
+        timm pillow numpy pyyaml huggingface-hub \
+    && uv pip install /opt/robovla
+
+ARG OPENVLA_REF=main
+RUN git clone --depth 1 --branch "${OPENVLA_REF}" \
+        https://github.com/openvla/openvla /opt/openvla \
+    && uv pip install /opt/openvla
+
+COPY images/bin /opt/robovla/bin
+RUN chmod +x /opt/robovla/bin/robovla_job /opt/robovla/bin/finetune
+
+# Same container contract as the CUDA image: the quadlet mounts the host
+# workdir -> /data and the model volume -> /models; :8601 is console-only.
+WORKDIR /data
+EXPOSE 8601
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent.server"]
