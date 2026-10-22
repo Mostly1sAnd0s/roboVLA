@@ -13,7 +13,11 @@ openvla pin is verified.
 
 Prereqs (skipped with a reason when absent, so a CPU box with GPU_TESTS=1
 degrades to skips, not failures): the podman image present, and the base
-model downloaded into the model dir (``robovla cli model_download``).
+model in the model dir — the dir must be the HF hub-cache layout (contains
+``models--openvla--openvla-7b/``), populated by ``huggingface-cli download
+openvla/openvla-7b --cache-dir <dir>`` or by an earlier online job
+(docs/runner-image.md). The job runs with ``HF_HUB_CACHE=/models`` so the
+engine loads the base model offline from the mounted volume.
 """
 
 from __future__ import annotations
@@ -29,7 +33,8 @@ REPO = pathlib.Path(__file__).parents[2]
 IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10")
 IMAGE_ROCM = os.environ.get("ROBOVLA_IMAGE_ROCM", "robovla-runner-rocm:2026.10")
 MODEL_DIR = pathlib.Path(os.environ.get(
-    "ROBOVLA_MODEL_DIR", "~/robovla-models/openvla-7b")).expanduser()
+    "ROBOVLA_MODEL_DIR",
+    "~/.cache/huggingface/hub")).expanduser()  # the HF hub-cache dir
 WORK_DIR = pathlib.Path(os.environ.get(
     "ROBOVLA_WORK_DIR", "~/robovla-selftest")).expanduser()
 
@@ -66,7 +71,8 @@ def _run_job(image: str, spec: dict) -> subprocess.CompletedProcess:
         "--volume", f"{WORK_DIR}:/data",
         "--volume", f"{MODEL_DIR}:/models:ro",
         "-e", "ROBOVLA_WORKDIR=/data",
-        "-e", "ROBOVLA_MODEL_DIR=/models/openvla-7b",
+        "-e", "ROBOVLA_MODEL_DIR=/models",
+        "-e", "HF_HUB_CACHE=/models",
         image, "/opt/venv/bin/python", "/opt/robovla/bin/robovla_job",
         "--spec", f"/data/runs/{spec['job_id']}/spec.json",
     ]

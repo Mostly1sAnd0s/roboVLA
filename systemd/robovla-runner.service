@@ -9,14 +9,21 @@
 #     ROBOVLA_LAN_IP    <node LAN IP>
 #     ROBOVLA_AGENT_TOKEN   <shown once at node add>
 #     ROBOVLA_WORKDIR   /home/adam/robovla
-#     ROBOVLA_MODEL_DIR=/home/adam/robovla/models/openvla-7b
+#     ROBOVLA_MODEL_DIR=/home/adam/robovla/models   # the HF hub-cache dir
 #     ROBOVLA_IMAGE=robovla-runner-cuda:2026.10
+#     HF_HUB_CACHE=/models            # engine loads the base model OFFLINE from
+#                                     # the mounted model volume (docs/runner-image.md)
 #
-# NVIDIA (campus nodes): as shipped (nvidia device passthrough).
-# ROCm (home dev lab, gfx1151): replace the four nvidia --device lines with
+# NVIDIA (campus nodes + host65): as shipped — GPU passthrough is CDI
+# (`--device nvidia.com/gpu=all`, nvidia-container-toolkit >= 1.19; works
+# rootless and rootful). ONE-TIME root setup on each node:
+#   sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+# The legacy plain `--device /dev/nvidia*` lines only work with the old
+# hook-mode runtime + ROOTFUL podman — do not use them with User=adam.
+# ROCm (home dev lab, gfx1151): replace the --device nvidia.com line with
 #   --device /dev/kfd --device /dev/dri --security-opt seccomp=unconfined
 # and set ROBOVLA_GPU=rocm + ROBOVLA_IMAGE=robovla-runner-rocm:... in the
-# env file.
+# env file. Full per-platform procedure: docs/runner-image.md.
 #
 # Install: copy to /etc/systemd/system/robovla-runner.service (or run
 # ``robovla-node install``, which pulls the image and enables this unit).
@@ -32,16 +39,12 @@ User=adam
 EnvironmentFile=-/etc/robovla/node.env
 ExecStart=/usr/bin/podman run --rm \
     --name robovla-runner \
-    --device /dev/nvidia0 \
-    --device /dev/nvidiactl \
-    --device /dev/nvidia-uvm \
-    --device /dev/nvidia-uvm-tools \
-    --cap-add SYS_PTRACE \
+    --device nvidia.com/gpu=all \
     -v ${ROBOVLA_WORKDIR}:/data \
     -v ${ROBOVLA_MODEL_DIR}:/models:ro \
     --env-file /etc/robovla/node.env \
     -e ROBOVLA_WORKDIR=/data \
-    -e ROBOVLA_MODEL_DIR=/models/openvla-7b \
+    -e ROBOVLA_MODEL_DIR=/models \
     -p ${ROBOVLA_LAN_IP}:8601:8601 \
     ${ROBOVLA_IMAGE}
 ExecStop=/usr/bin/podman stop robovla-runner

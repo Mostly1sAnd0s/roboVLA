@@ -90,9 +90,13 @@ class TestOpsArtifacts:
     def test_runner_unit_wraps_podman_with_gpu_passthrough(self):
         text = self.RUNNER_UNIT.read_text()
         assert "podman run" in text
-        # GPU passthrough (the same shape the GPU_TESTS rows use)
-        assert "/dev/nvidia0" in text
-        assert "SYS_PTRACE" in text
+        # GPU passthrough is CDI (docs/runner-image.md): nvidia-container-toolkit
+        # generates /etc/cdi/nvidia.yaml once per node (root) and podman
+        # (rootless OR rootful) resolves the devices + driver libs from it.
+        assert "nvidia.com/gpu=all" in text
+        # the legacy plain-device form only works with the hook-mode runtime
+        # + ROOTFUL podman — the unit is User=<node> (rootless), so reject it
+        assert "--device /dev/nvidia0" not in text
         # per-node values come from the env file, never hardcoded here
         assert "EnvironmentFile" in text
 
