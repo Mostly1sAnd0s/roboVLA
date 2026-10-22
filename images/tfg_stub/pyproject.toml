@@ -1,0 +1,13 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tfg-stub"
+version = "0.0.1"
+description = "roboVLA image-only stub for tensorflow_graphics (unresolvable on py3.12)"
+requires-python = ">=3.12"
+dependencies = []
+
+[tool.setuptools.packages.find]
+include = ["tensorflow_graphics*"]

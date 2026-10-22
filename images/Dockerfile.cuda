@@ -73,22 +73,43 @@ RUN git init /opt/openvla \
 # accelerate (the DDP PartialState), wandb (its logging; the wrapper execs it
 # with WANDB_MODE=disabled — no credentials on the LAN), and the RLDS/TFDS
 # data pipeline (tensorflow + tensorflow_datasets + the official dlimp fork,
-# a git dep pinned at its 2024-07 commit; tensorflow_graphics is the
-# official pin for the prismatic processor). Pins: draccus / TFDS /
-# TF-graphics are the official repo's pins; tensorflow is 2.19.1 because the
-# official 2.15 predates Python 3.12 (cp312 wheels start at 2.17) and this
-# image is 3.12. The official pyproject's torch / transformers / peft /
-# tokenizers pins are DELIBERATELY NOT followed — the image keeps the
-# probe-verified stack above (downgrading them would re-open the Phase 1
-# pins). TF is CPU-only here: the rlds loader sets
-# tf.config.set_visible_devices([], "GPU") (torch owns the GPU), so the
-# GPU wheel is chosen for stack faithfulness, not for a GPU path.
+# a git dep pinned at its 2024-07 commit). Pins: draccus / TFDS are the
+# official repo's pins; tensorflow is 2.19.1 because the official 2.15
+# predates Python 3.12 (cp312 wheels start at 2.17) and this image is 3.12.
+# The official pyproject's torch / transformers / peft / tokenizers pins are
+# DELIBERATELY NOT followed — the image keeps the probe-verified stack above
+# (downgrading them would re-open the Phase 1 pins). TF is CPU-only here:
+# the rlds loader sets tf.config.set_visible_devices([], "GPU") (torch owns
+# the GPU), so the GPU wheel is chosen for stack faithfulness, not for a GPU
+# path.
+#
+# tensorflow_graphics — the ONE official pin this image CANNOT follow.
+# tensorflow-graphics==2021.12.3 (latest release AND the official pin)
+# depends on tensorflow-addons>=0.10.0, and tensorflow-addons 0.23.0 (latest)
+# ships wheels only for cp39-cp311, so it is unresolvable on this image's
+# Python 3.12 (the uv resolver fails at layer-build time). The pinned openvla
+# code imports `tensorflow_graphics.geometry.transformation` at module level
+# (oxe/utils/droid_utils.py) but uses it ONLY inside DROID / furniture-bench
+# / iamlab / cmu dataset transforms — none of which the crosscheck path
+# ('toto', a pure tf.concat standardization) ever calls. So the image ships
+# a loud-failure stub (images/tfg_stub): it satisfies the import, and every
+# leaf raises a clear RuntimeError on invocation. If a future OXE dataset is
+# ever added to the crosscheck, its standardize transform must be verified to
+# not touch tfg (or the stub must be replaced with the real package on a
+# py<=3.11 image).
 RUN uv pip install \
         draccus==0.8.0 accelerate==1.15.0 wandb==0.31.0 \
         tensorflow==2.19.1 tensorflow_datasets==4.9.3 \
-        tensorflow_graphics==2021.12.3
+    && uv pip install /opt/robovla/images/tfg_stub
+# dlimp installed --no-deps: its setup.py hard-pins tensorflow==2.15.0
+# (predates 3.12, no cp312 wheel), which would fail resolution / force a
+# downgrade of the image's 2.19.1. Its runtime import surface (dlimp.dataset /
+# dlimp.utils / dlimp.transforms) is {tensorflow, tensorflow_datasets,
+# numpy} — all already installed above; the convert/dev extras (pandas,
+# imageio, tqdm-multiprocess, absl) are builder-only and not imported by the
+# openvla RLDS load path.
 ARG DLIMP_SHA=040105d256bd28866cc6620621a3d5f7b6b91b46
-RUN uv pip install \
+RUN uv pip install --no-deps \
         "dlimp @ git+https://github.com/moojink/dlimp_openvla@${DLIMP_SHA}"
 
 # Fixed-argv entrypoints (python scripts — never a shell)

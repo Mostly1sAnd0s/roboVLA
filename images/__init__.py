@@ -8,6 +8,9 @@ Baked into the runner image (NOT part of the console wheel):
   vla_compat.py          the vendored official prompt builder (pinned SHA)
   rlds_writer.py         the crosscheck subset -> official RLDS/TFDS dataset
   crosscheck_finetune.py the crosscheck wrapper (official finetune.py)
+  tfg_stub/              the tensorflow_graphics stub (unresolvable on py3.12;
+                         image installs it; pinned code only touches it in
+                         DROID-only transforms the crosscheck never runs)
   Dockerfile.cuda        the CUDA image (Blackwell, cu128)
   Dockerfile.rocm        the ROCm image (home dev lab, gfx1151)
 
