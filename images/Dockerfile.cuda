@@ -82,6 +82,23 @@ RUN git init /opt/openvla \
         https://github.com/openvla/openvla "${OPENVLA_SHA}" \
     && git -C /opt/openvla checkout FETCH_HEAD
 
+# Crosscheck build-time workaround (host65 attempt 6, 2026-10-22): the
+# pinned finetune.py cannot complete ONE QLoRA step on this image's
+# probe-verified stack (torch 2.9.0's implicit non-reentrant checkpoint
+# default meets the hardcoded DDP wrap — no static_graph — and the first
+# backward dies: "Expected to mark a variable ready only once";
+# openvla/openvla#90, a maintainer-acknowledged latent bug, same failure
+# signature). The patch IS the #90 fix (static_graph + explicitly
+# reentrant checkpointing — mathematically neutral: a DDP communication
+# hint at world_size 1 / a recomputation implementation detail). Applied
+# --check first (the build fails if the pinned file ever drifts from the
+# patch context) and the patched file is sha256-pinned (drift = build
+# failure). Documented in the crosscheck results + the wrapper docstring.
+COPY images/finetune_patch.diff /tmp/finetune_patch.diff
+RUN git -C /opt/openvla apply --check /tmp/finetune_patch.diff \
+    && git -C /opt/openvla apply /tmp/finetune_patch.diff \
+    && echo "a5600f58cbbe126e29b5ff57e86063d3f65c39ed639f7a7e5b1e0ac6bc12942e  /opt/openvla/vla-scripts/finetune.py" | sha256sum -c
+
 # The official fine-tune stack (crosscheck, §6): vla-scripts/finetune.py at
 # the pinned SHA needs its own dependencies — draccus (its config layer),
 # accelerate (the DDP PartialState), wandb (its logging; the wrapper execs it

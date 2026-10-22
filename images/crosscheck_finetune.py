@@ -30,6 +30,17 @@ Official-vs-recipe notes (pinned openvla SHA c8f03f48, read 2026-10-22):
   shape/convergence, not point-for-point parity).
 * no max_seq_length flag: the collator pads to the batch's longest sequence
   (~287 with the official 256 image tokens + prompt + 7 action tokens).
+* build-time workaround (host65 attempt 6, 2026-10-22): the pinned script
+  cannot complete ONE QLoRA step on this image's stack — its hardcoded
+  DDP wrap (no static_graph) + the gradient checkpointing that
+  prepare_model_for_kbit_training enables meet torch 2.9.0's implicit
+  NON-reentrant checkpoint default and the first backward dies ("Expected
+  to mark a variable ready only once"; openvla/openvla#90, a
+  maintainer-acknowledged latent bug — no argv/env reaches the DDP args).
+  The image therefore applies images/finetune_patch.diff at build time
+  (--check against the SHA checkout, patched file sha256-pinned): the
+  exact #90 fix (static_graph + explicitly reentrant checkpointing),
+  mathematically neutral. The crosscheck results carry this note.
 * wandb: the official script calls ``wandb.init`` on the main process — the
   wrapper execs it with ``WANDB_MODE=disabled`` (no credentials on the LAN;
   progress goes to the job log + the final checkpoint).

@@ -1,0 +1,23 @@
+--- a/vla-scripts/finetune.py
++++ b/vla-scripts/finetune.py
+@@ -181,9 +181,19 @@
+         vla = get_peft_model(vla, lora_config)
+         vla.print_trainable_parameters()
+ 
+     # Wrap VLA in PyTorch DDP Wrapper for Multi-GPU Training
+-    vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True)
++    vla = DDP(vla, device_ids=[device_id], find_unused_parameters=True, gradient_as_bucket_view=True, static_graph=True)
++    # roboVLA crosscheck build-time workaround (openvla/openvla#90, the
++    # maintainer-acknowledged fix): the pinned script's DDP wrap + QLoRA +
++    # gradient checkpointing (enabled by prepare_model_for_kbit_training)
++    # dies on the FIRST backward under torch 2.9's implicit non-reentrant
++    # checkpoint default ("Expected to mark a variable ready only once",
++    # host65 2026-10-22, attempt 6). static_graph + explicit reentrant
++    # checkpointing are mathematically neutral (a DDP communication hint
++    # at world_size 1 / a recomputation implementation detail).
++    vla.module.gradient_checkpointing_enable(
++        gradient_checkpointing_kwargs={"use_reentrant": True})
+ 
+     # Create Optimizer =>> note that we default to a simple constant learning rate!
+     trainable_params = [param for param in vla.parameters() if param.requires_grad]
+     optimizer = AdamW(trainable_params, lr=cfg.learning_rate)
