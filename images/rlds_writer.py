@@ -45,7 +45,10 @@ from __future__ import annotations
 
 import math
 import re
+import shutil
 from pathlib import Path
+
+import numpy as np
 from typing import Any, Sequence
 
 from robovla.core.errors import RobovlaError
@@ -188,6 +191,84 @@ def exp_id(model_id: str, dataset_name: str, eff_batch: int, lr: float,
 # -- the TFDS writer (the lazy stack boundary) -------------------------------------
 
 
+def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
+                        tfds, features, *, val_empty: bool = True) -> type:
+    """The dynamic TFDS builder class for ``samples`` (pure over the
+    injected ``tfds`` module object — CPU-testable; ``write_rlds`` is the
+    lazy boundary that imports the real stack and builds ``features``).
+
+    Subclasses ``tfds.core.GeneratorBasedBuilder`` — NOT the raw
+    ``DatasetBuilder``: in TFDS 4.9.3 (the pinned version) the raw class
+    leaves ``_download_and_prepare`` / ``_as_dataset`` abstract, so a
+    subclass defining only ``_info`` + ``_split_generators`` cannot be
+    instantiated (host65, first crosscheck attempt). The generator base
+    implements both on top of ``_split_generators`` — the same base the
+    official dlimp fork's MultiThreadedDatasetBuilder builds on.
+    """
+
+    def _example(sample: dict[str, Any]) -> dict[str, Any]:
+        """The pure sample -> the schema-typed example (dtype casts at the
+        boundary; jpeg bytes / strings pass through)."""
+        return {
+            "steps": [
+                {
+                    "observation": {
+                        "image": st["observation"]["image"],
+                        "natural_language_instruction":
+                            st["observation"]["natural_language_instruction"],
+                    },
+                    "action": {k: np.array(v, dtype=np.float32)
+                               for k, v in st["action"].items()},
+                    "first": st["first"],
+                    "last": st["last"],
+                    "is_terminal": st["is_terminal"],
+                    "episode_index": st["episode_index"],
+                    "frame_index": st["frame_index"],
+                    "next": {k: st["next"][k]
+                             for k in ("first", "last", "episode_index",
+                                       "frame_index")},
+                }
+                for st in sample["steps"]
+            ]
+        }
+
+    def _info(self):
+        return self.dataset_info_from_configs(
+            features=features,
+            description="roboVLA crosscheck subset (images/rlds_writer.py).")
+
+    def _split_generators(self, dl_manager):
+        # No downloads (the data is in-memory samples); dl_manager unused.
+        splits = {"train": iter(map(_example, samples))}
+        if val_empty:
+            # Empty on purpose (module docstring): the official loader then
+            # uses split "train" in full, not "train[:95%]".
+            splits["val"] = iter(())
+        return splits
+
+    def _generate_examples(self, **kwargs):
+        # The base _download_and_prepare calls _split_generators directly
+        # (verified in tfds 4.9.3); this exists to satisfy
+        # GeneratorBasedBuilder's abstract method — kept in lockstep so it
+        # cannot silently diverge.
+        return _split_generators(self, None)
+
+    # Class name lowercases to `name` (the TFDS output dir) AND the explicit
+    # `name` attribute — belt and suspenders for the tfds name derivation.
+    return type(name[0].upper() + name[1:],
+                (tfds.core.GeneratorBasedBuilder,), {
+                    "name": name,
+                    "VERSION": tfds.core.Version(RLDS_VERSION),
+                    "RELEASE_NOTES": {RLDS_VERSION:
+                                      "roboVLA crosscheck subset "
+                                      "(deterministic, seeded per student "
+                                      "+ dataset version)."},
+                    "_info": _info,
+                    "_split_generators": _split_generators,
+                    "_generate_examples": _generate_examples,
+                })
+
+
 def write_rlds(root: str | Path, name: str,
                samples: Sequence[dict[str, Any]]) -> None:
     """Materialize ``samples`` as ``<root>/<name>/1.0.0/`` (TFDS arrow).
@@ -202,7 +283,6 @@ def write_rlds(root: str | Path, name: str,
         raise RobovlaError("dataset_not_ready",
                            "no episodes to materialize as an RLDS dataset")
     try:
-        import numpy as np
         import tensorflow as tf
         import tensorflow_datasets as tfds
     except ImportError as e:
@@ -238,75 +318,19 @@ def write_rlds(root: str | Path, name: str,
     features = tfds.features.FeaturesDict({"steps":
                                            tfds.features.Dataset(step_features)})
 
-    def _example(sample: dict[str, Any]) -> dict[str, Any]:
-        """The pure sample -> the schema-typed example (dtype casts at the
-        boundary; jpeg bytes / strings pass through)."""
-        return {
-            "steps": [
-                {
-                    "observation": {
-                        "image": st["observation"]["image"],
-                        "natural_language_instruction":
-                            st["observation"]["natural_language_instruction"],
-                    },
-                    "action": {k: np.array(v, dtype=np.float32)
-                               for k, v in st["action"].items()},
-                    "first": st["first"],
-                    "last": st["last"],
-                    "is_terminal": st["is_terminal"],
-                    "episode_index": st["episode_index"],
-                    "frame_index": st["frame_index"],
-                    "next": {k: st["next"][k]
-                             for k in ("first", "last", "episode_index",
-                                       "frame_index")},
-                }
-                for st in sample["steps"]
-            ]
-        }
-
-    # Class name lowercases to `name` (the TFDS output dir) AND the explicit
-    # `name` attribute — belt and suspenders for the tfds name derivation.
-    builder_cls = type(name[0].upper() + name[1:],
-                       (tfds.core.DatasetBuilder,), {
-                           "name": name,
-                           "VERSION": tfds.core.Version(RLDS_VERSION),
-                           "RELEASE_NOTES": {RLDS_VERSION:
-                                             "roboVLA crosscheck subset "
-                                             "(deterministic, seeded per "
-                                             "student + dataset version)."},
-                           "_info": lambda self: self.dataset_info_from_configs(
-                               features=features,
-                               description="roboVLA crosscheck subset "
-                                           "(images/rlds_writer.py)."),
-                           "_split_generators": lambda self, dl_manager: {
-                               "train": iter(map(_example, samples)),
-                               "val": iter(()),  # empty on purpose (module
-                               # docstring): the official loader then uses
-                               # split "train" in full, not "train[:95%]".
-                           },
-                       })
-    builder = builder_cls(data_dir=str(root))
+    builder_cls = build_builder_class(name, samples, tfds, features)
     try:
-        builder.download_and_prepare()
+        builder_cls(data_dir=str(root)).download_and_prepare()
         return
     except Exception:
         # Documented fallback: if this TFDS version rejects an empty split,
-        # write train-only (the official side then trains "train[:95%]").
+        # write train-only (the official side then trains "train[:95%]"). A
+        # failed write may leave partial files behind — clear the dataset
+        # dir before the retry (tfds refuses to write over an existing one).
         print(f"rlds_writer: empty val split rejected — falling back to a "
               f"train-only dataset (official side will use train[:95%])",
               flush=True)
-    builder_cls = type(name[0].upper() + name[1:],
-                       (tfds.core.DatasetBuilder,), {
-                           "name": name,
-                           "VERSION": tfds.core.Version(RLDS_VERSION),
-                           "RELEASE_NOTES": {RLDS_VERSION:
-                                             "roboVLA crosscheck subset."},
-                           "_info": lambda self: self.dataset_info_from_configs(
-                               features=features,
-                               description="roboVLA crosscheck subset "
-                                           "(images/rlds_writer.py)."),
-                           "_split_generators": lambda self, dl_manager: {
-                               "train": iter(map(_example, samples)),
-                           },
-                       })
-    builder_cls(data_dir=str(root)).download_and_prepare()
+        shutil.rmtree(Path(root) / name, ignore_errors=True)
+    build_builder_class(name, samples, tfds, features,
+                        val_empty=False)(data_dir=str(root)
+                                          ).download_and_prepare()

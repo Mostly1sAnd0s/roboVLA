@@ -21,12 +21,19 @@
 #   timm 0.9.10 — modeling_prismatic.py HARD-CHECKS timm against
 #   {0.9.10, 0.9.11, 0.9.12, 0.9.16}; an unpinned timm (1.x) breaks load.
 #
-# The openvla CODE is CLONED at a PINNED SHA (not pip-installed): the
-# engine uses the vendored prompt builder (images/vla_compat.py) + pure
-# token math, because `import prismatic` drags draccus + tensorflow (via
-# prismatic.vla.datasets). The clone + the official-stack layer below serve
-# the crosscheck job (official vla-scripts/finetune.py on the deterministic
-# 50-episode RLDS subset — images/crosscheck_finetune.py + rlds_writer.py).
+# LAYER ORDERING (cache stability, 2026-10-22): the heavy dependency layers
+# (torch ~4 GB, the official TF stack ~1 GB, the pinned git fetches) come
+# BEFORE any repo source COPY, and the .dockerignore keeps this Dockerfile
+# out of the build context. Editing src/agent/images/scripts therefore
+# re-runs only the small source layers (seconds), not the dependency
+# layers (tens of minutes).
+#
+# The openvla CODE is CLONED at a pinned SHA and ALSO pip-installed
+# --no-deps (the official install is `pip install -e .`): the clone gives
+# the pinned vla-scripts/finetune.py + prismatic sources; the install makes
+# `import prismatic` work for the crosscheck job. The console engine path
+# does NOT import prismatic — it uses the vendored prompt builder
+# (images/vla_compat.py) + pure token math (images/engine.py).
 #
 # Build (from the repo root):
 #   podman build -t robovla-runner-cuda:2026.10.1 -f images/Dockerfile.cuda .
@@ -46,19 +53,22 @@ RUN apt-get update \
     && uv python install 3.12 \
     && uv venv --python 3.12 /opt/venv
 
+# The Phase 1 pins — BEFORE the repo source COPY (layer-ordering note
+# above). torch + torchvision in ONE command (the shared-resolve pin trap).
+RUN uv pip install \
+        torch==2.9.0+cu128 torchvision==0.24.0+cu128 \
+            --index-url https://download.pytorch.org/whl/cu128
+RUN uv pip install \
+        transformers==4.51.3 peft==0.14.0 bitsandbytes==0.50.2 \
+        timm==0.9.10 pillow numpy pyyaml huggingface-hub
+
 # The console wheel (robovla + agent packages) + the images package
 # (job program / engine / crosscheck wrapper — not in the wheel).
 COPY pyproject.toml README.md /opt/robovla/
 COPY src /opt/robovla/src
 COPY agent /opt/robovla/agent
 COPY images /opt/robovla/images
-RUN uv pip install \
-        torch==2.9.0+cu128 torchvision==0.24.0+cu128 \
-            --index-url https://download.pytorch.org/whl/cu128 \
-    && uv pip install \
-        transformers==4.51.3 peft==0.14.0 bitsandbytes==0.50.2 \
-        timm==0.9.10 pillow numpy pyyaml huggingface-hub \
-    && uv pip install /opt/robovla
+RUN uv pip install /opt/robovla
 
 # Pinned openvla code (Phase 1 SHA — the probe verified every touchpoint
 # against it; re-pin = new SHA + new tag + gpu_selftest at node join).

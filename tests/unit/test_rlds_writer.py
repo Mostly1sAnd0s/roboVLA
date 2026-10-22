@@ -109,6 +109,89 @@ def test_exp_id_formula():
     assert e2 == "openvla-7b+toto+b8+lr-0.0005+lora-r32+dropout-0.0"
 
 
+# -- the dynamic TFDS builder class (CPU-pinned with a fake tfds) --------------
+#
+# The first host65 crosscheck run (2026.10.1, 2026-10-22) failed at
+# instantiation: in TFDS 4.9.3 the raw tfds.core.DatasetBuilder leaves
+# `_download_and_prepare` / `_as_dataset` abstract, so a class with only
+# `_info` + `_split_generators` cannot be built. The generator base
+# (tfds.core.GeneratorBasedBuilder — the same base the official dlimp
+# fork's MultiThreadedDatasetBuilder builds on) implements both on top of
+# `_split_generators`, which is what the base _download_and_prepare calls.
+
+
+def _fake_tfds():
+    """Just enough of the tfds surface for build_builder_class: the class
+    construction is pure Python over the injected module object (no real
+    TF import — the CPU suite never carries the stack)."""
+    import types
+
+    class _GeneratorBasedBuilder:
+        pass
+
+    class _DatasetBuilder:
+        pass
+
+    class _Version:
+        def __init__(self, s):
+            self.s = s
+
+    return types.SimpleNamespace(core=types.SimpleNamespace(
+        GeneratorBasedBuilder=_GeneratorBasedBuilder,
+        DatasetBuilder=_DatasetBuilder,
+        Version=_Version))
+
+
+def test_build_builder_class_contract():
+    fake = _fake_tfds()
+    samples = [rw.build_episode_sample("ep_%04d" % i, "t", [b"x"],
+                                       [(0.0,) * 7]) for i in range(1, 51)]
+    cls = rw.build_builder_class("toto", samples, fake, features=None)
+    # The base must be GeneratorBasedBuilder (never the raw DatasetBuilder).
+    assert issubclass(cls, fake.core.GeneratorBasedBuilder)
+    assert not issubclass(cls, fake.core.DatasetBuilder)
+    assert cls.__name__ == "Toto" and cls.name == "toto"
+    assert str(cls.VERSION.s) == "1.0.0"
+    b = cls.__new__(cls)  # the (data_dir) __init__ is the TFDS boundary
+    splits = cls._split_generators(b, None)
+    assert set(splits) == {"train", "val"}
+    assert sum(1 for _ in splits["train"]) == 50
+    assert sum(1 for _ in splits["val"]) == 0  # empty on purpose
+    # _generate_examples must stay in lockstep with _split_generators (the
+    # base writer calls the latter; the former only satisfies the abstract
+    # method).
+    assert set(cls._generate_examples(b)) == {"train", "val"}
+    train_only = rw.build_builder_class("toto", samples, fake, features=None,
+                                        val_empty=False)
+    assert set(train_only._split_generators(
+        train_only.__new__(train_only), None)) == {"train"}
+
+
+def test_build_builder_class_example_layout():
+    fake = _fake_tfds()
+    sample = rw.build_episode_sample("ep_0007", "stop at the target",
+                                     [b"frame-0", b"frame-1"],
+                                     [(0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0),
+                                      (0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0)])
+    cls = rw.build_builder_class("toto", [sample], fake, features=None)
+    (example,) = list(cls._split_generators(cls.__new__(cls), None)["train"])
+    assert len(example["steps"]) == 2
+    s0, s1 = example["steps"]
+    assert s0["observation"]["image"] == b"frame-0"
+    assert s0["observation"]["natural_language_instruction"] == \
+        b"stop at the target"
+    assert s0["first"] is True and s1["last"] is True
+    assert s1["is_terminal"] is True
+    assert s0["episode_index"] == 7 and s1["frame_index"] == 1
+    assert s1["next"] == {"first": True, "last": False,
+                          "episode_index": 8, "frame_index": 0}
+    # dtype casts happen at this boundary (the schema demands float32)
+    import numpy as np
+    act = s0["action"]["world_vector"]
+    assert isinstance(act, np.ndarray) and act.dtype == np.float32
+    assert list(act) == [0.1, 0.2, 0.3]
+
+
 # -- the lazy boundary: no tensorflow -> clean §9.6 internal ----------------------
 
 
