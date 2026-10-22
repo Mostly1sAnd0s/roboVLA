@@ -10,9 +10,11 @@ The wrapper: validates the spec with the SHARED validator, materializes the
 subset as an official RLDS/TFDS dataset under the job dir
 (``images/rlds_writer.py`` — the official script's only dataset input), and
 execs the official script with a FIXED argv through the house proc seam
-(no shell, ever). The official script's stdout/stderr are inherited, so the
-agent's job log carries them. On a clean exit it writes the file-contract
-artifact manifest (adapter + merged model) for the console.
+(no shell, ever). The official script's captured stdout/stderr are
+forwarded to the wrapper's own streams (the proc seam captures the child's
+output, host65 attempt 5), so the agent's job log carries them. On a clean
+exit it writes the file-contract artifact manifest (adapter + merged
+model) for the console.
 
 Official-vs-recipe notes (pinned openvla SHA c8f03f48, read 2026-10-22):
 
@@ -198,6 +200,17 @@ def main(argv: list[str] | None = None) -> int:
         # REPLACES the environment when given — merge over the inherited env.
         env = {**os.environ, "WANDB_MODE": WANDB_MODE}
         cp = run_fixed_argv(finetune_argv, env=env)
+        # run_fixed_argv CAPTURES the official's streams (capture_output) —
+        # forward both to our own stdout/stderr so the agent's job log
+        # carries them (the module docstring's promise; host65 attempt 5,
+        # 2026-10-22: the swallowed child output hid the real failure
+        # behind a bare exit code).
+        if cp.stdout:
+            sys.stdout.write(cp.stdout)
+            sys.stdout.flush()
+        if cp.stderr:
+            sys.stderr.write(cp.stderr)
+            sys.stderr.flush()
         if cp.returncode == 0:
             _write_artifacts(spec, job_dir, workdir, dirs)
     except RobovlaError as e:

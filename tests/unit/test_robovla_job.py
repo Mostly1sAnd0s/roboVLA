@@ -379,6 +379,51 @@ def test_crosscheck_main_malformed_spec_still_unreadable(tmp_path, capsys):
     assert "unreadable spec" in capsys.readouterr().err
 
 
+def test_crosscheck_main_forwards_official_output(tmp_path, monkeypatch,
+                                                 capsys):
+    """host65 attempt 5 (2026-10-22): run_fixed_argv CAPTURES the
+    official's streams (capture_output=True), and main() used to drop
+    them — the official traceback vanished from the job log (only the
+    exit code remained). Both streams must be forwarded to main()'s own
+    stdout/stderr (the module docstring's promise), on every exit code."""
+    from subprocess import CompletedProcess
+
+    from images import rlds_writer as rw
+    spec = _spec("crosscheck")
+    p = tmp_path / "wd" / "runs" / spec["job_id"] / "spec.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps(spec))
+    _real_dataset(tmp_path / "wd")
+    monkeypatch.setattr(rw, "write_rlds", _fake_rlds_writer()[0])
+    # the official script would create the exp_id dirs (exit-0 manifest)
+    o = spec["optim"]
+    exp = rw.exp_id(spec["model"], rw.RLDS_NAME, o["batch"] * o["grad_accum"],
+                    o["lr"], spec["lora"]["rank"], 0.0, True, spec["job_id"],
+                    spec["image_aug"])
+    (p.parent / "crosscheck_out" / exp).mkdir(parents=True)
+    (p.parent / "crosscheck_out" / "adapter-tmp" / exp).mkdir(parents=True)
+
+    def make_fake_run(rc):
+        def fake_run(argv, **kw):
+            return CompletedProcess(argv, rc, stdout="OFFICIAL-STDOUT\n",
+                                    stderr="OFFICIAL-STDERR\n")
+        return fake_run
+
+    monkeypatch.setattr(xf, "run_fixed_argv", make_fake_run(0))
+    assert xf.main(["--spec", str(p)]) == 0
+    res = capsys.readouterr()
+    assert "OFFICIAL-STDOUT" in res.out
+    assert "OFFICIAL-STDERR" in res.err
+    assert "crosscheck finished (official finetune.py, exit 0)" in res.out
+
+    monkeypatch.setattr(xf, "run_fixed_argv", make_fake_run(1))
+    assert xf.main(["--spec", str(p)]) == 1
+    res = capsys.readouterr()
+    assert "OFFICIAL-STDOUT" in res.out
+    assert "OFFICIAL-STDERR" in res.err
+    assert "crosscheck finished (official finetune.py, exit 1)" in res.out
+
+
 # -- dataset loading (CPU: engine._samples is pure — no GPU stack) ---------------
 
 
