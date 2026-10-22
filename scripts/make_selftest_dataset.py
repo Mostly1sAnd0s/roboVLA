@@ -94,9 +94,11 @@ def main() -> int:
 
     ds_dir = Path(args.workdir) / "datasets" / args.dataset.replace("/", "__")
     if ds_dir.exists():
-        print(f"error: {ds_dir} already exists — refusing to overwrite",
-              file=sys.stderr)
-        return 1
+        # Idempotent by contract (the hardware rows re-materialize before
+        # every job): present => leave it untouched and succeed. Never
+        # overwrite — the job's data must be stable across runs.
+        print(f"{ds_dir} already present — leaving it untouched (no overwrite)")
+        return 0
     task = args.dataset.split("/")[1]
 
     episodes = ds_dir / "episodes"
