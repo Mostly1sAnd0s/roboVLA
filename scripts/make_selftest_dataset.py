@@ -1,16 +1,20 @@
 #!/usr/bin/env python3
-"""Materialize a small deterministic synthetic dataset for gpu_selftest.
+"""Materialize a small deterministic synthetic dataset for the hardware rows.
 
-The selftest's predict-action probe + 10-step QLoRA section need a real
-dataset at ``<workdir>/datasets/<dataset-id>/`` (engine._samples: episodes/
-ep_*/{episode.json, actions.json, frame_*.jpg} + norm_stats.json). At node
-join the teacher runs ONE selftest per node; this script materializes the
-data so the probe/QLoRA sections execute on identical inputs everywhere
-(deterministic seed — same bytes on every node).
+The gpu_selftest's predict-action probe + 10-step QLoRA section and the
+crosscheck row's 50-episode official finetune both need a real dataset at
+``<workdir>/datasets/<dataset-id>/`` (engine._samples / _episodes_raw:
+episodes/ep_*/{episode.json, actions.json, frame_*.jpg} + norm_stats.json).
+This script materializes them so the rows execute on identical inputs
+everywhere (deterministic seed — same data on every node).
 
 Usage:
     python3 make_selftest_dataset.py --workdir /path/to/node-workdir \
         --dataset s01/stop-at-target/v1 [--episodes 6] [--frames 8]
+
+    # the crosscheck row (tests/hardware): the 50-episode dataset
+    python3 make_selftest_dataset.py --workdir /path/to/node-workdir \
+        --dataset s01/crosscheck-50/v1 --episodes 50 --frames 20
 
 Writes only under <workdir>/datasets/<dataset-id>/ (refuses to overwrite an
 existing dataset dir). Frames are 224x224 JPEG (the prep seam's output size);
@@ -30,6 +34,12 @@ try:
     from PIL import Image
 except ImportError as e:  # the venv carries pillow; keep the failure clean
     print(f"error: pillow is required ({e})", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    import numpy as np  # vectorized frame generation (the venv/image carry it)
+except ImportError as e:
+    print(f"error: numpy is required ({e})", file=sys.stderr)
     sys.exit(1)
 
 SEED = 20261021          # deterministic: identical dataset on every node
@@ -53,18 +63,23 @@ def _actions(n: int, seed: int):
 
 
 def _frame(path: Path, ep: int, f: int, seed: int) -> None:
-    """A 224x224 JPEG: smooth gradient + seeded per-pixel noise."""
-    rng = random.Random(seed * 100000 + ep * 1000 + f)
-    img = Image.new("RGB", (224, 224))
-    px = img.load()
-    for y in range(224):
-        row = int(200 * y / 224)
-        for x in range(224):
-            n = rng.randint(-18, 18)
-            px[x, y] = (max(0, min(255, 40 + x + n)),
-                        max(0, min(255, row + n)),
-                        max(0, min(255, 200 - x + n)))
-    img.save(path, "JPEG", quality=90)
+    """A 224x224 JPEG: smooth gradient + seeded per-pixel noise.
+
+    Vectorized (numpy): the 50-episode crosscheck dataset (1000 frames)
+    must generate in seconds, not the 30+ minutes the per-pixel loop took.
+    Same shape as before: R = 40 + x, G = 200y/224, B = 200 - x, uniform
+    noise in [-18, 18], clipped to [0, 255] — the bytes themselves changed
+    with the vectorization (deterministic per seed, as before).
+    """
+    rng = np.random.default_rng(seed * 100000 + ep * 1000 + f)
+    xs = np.arange(224, dtype=np.int32)
+    base = np.zeros((224, 224, 3), dtype=np.int32)
+    base[..., 0] = 40 + xs[None, :]
+    base[..., 1] = (200 * np.arange(224, dtype=np.int32)[:, None]) // 224
+    base[..., 2] = 200 - xs[None, :]
+    noise = rng.integers(-18, 19, size=(224, 224, 3))
+    img = np.clip(base + noise, 0, 255).astype(np.uint8)
+    Image.fromarray(img).save(path, "JPEG", quality=90)
 
 
 def main() -> int:

@@ -214,49 +214,135 @@ def test_human_msg_extraction():
     assert engine._human_msg(custom) == custom
 
 
-# -- crosscheck wrapper: spec -> official finetune argv ----------------------------
+# -- crosscheck wrapper: spec -> official finetune argv (rework, 2026-10-22) -------
+#
+# The official vla-scripts/finetune.py (pinned openvla SHA) is DDP + draccus and
+# takes RLDS/TFDS input only: translate() materializes the deterministic
+# 50-episode core.crosscheck_subset as an official RLDS dataset (through the
+# injected ``writer`` seam — the CPU suite never imports tensorflow) and builds
+# the official fixed argv (torchrun, single GPU).
 
 
-def _fake_dataset(tmp_path, n: int) -> pathlib.Path:
-    """A dataset root the agent would have pulled: episodes/ep_NNNN/."""
-    root = tmp_path / "datasets" / "s01__stop-at-target__v1"
-    for i in range(n):
-        (root / "episodes" / f"ep_{i:04d}").mkdir(parents=True)
-    return root
+def _fake_rlds_writer():
+    calls = []
+
+    def writer(root, name, samples):
+        calls.append({"root": str(root), "name": name, "samples": samples})
+
+    return writer, calls
+
+
+def _flags(argv) -> dict:
+    """The draccus flag pairs after the torchrun launch prefix."""
+    return dict(zip(argv[7::2], argv[8::2]))
 
 
 def test_crosscheck_argv_and_materialized_subset(tmp_path):
     spec = _spec("crosscheck", seed=7)
-    root = _fake_dataset(tmp_path, 60)
+    ds = _real_dataset(tmp_path, episodes=60)
     job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
-    argv = xf.translate(spec, root, job_dir)
+    writer, calls = _fake_rlds_writer()
+    argv, dirs = xf.translate(spec, ds, job_dir, writer=writer)
 
-    # the official script, pinned in the image, with the shared recipe values
-    assert argv[0].endswith("python") and argv[1].endswith("finetune.py")
-    d = dict(zip(argv[2::2], argv[3::2]))
-    assert d["--data_path"].startswith(str(job_dir))  # the materialized subset
-    assert d["--pretrained_model_name_or_path"] == spec["model"]
-    assert d["--max_seq_length"] == "287"
-    assert d["--lora_r"] == "32" and d["--lora_alpha"] == "32"
+    # the official script, pinned in the image, single-GPU torchrun launch
+    assert argv[0].endswith("torchrun")
+    assert argv[1:6] == ["--standalone", "--nnodes", "1",
+                         "--nproc-per-node", "1"]
+    assert argv[6].endswith("vla-scripts/finetune.py")
+    d = _flags(argv)
+    assert d["--vla_path"] == spec["model"]
+    assert d["--data_root_dir"].startswith(str(job_dir))
+    assert d["--dataset_name"] == "toto"  # OXE config the RLDS subset borrows
+    assert d["--run_root_dir"] == str(job_dir / "crosscheck_out")
+    assert d["--adapter_tmp_dir"] == str(job_dir / "crosscheck_out" / "adapter-tmp")
+    assert d["--batch_size"] == str(spec["optim"]["batch"])
+    assert d["--grad_accumulation_steps"] == str(spec["optim"]["grad_accum"])
     assert d["--learning_rate"] == str(spec["optim"]["lr"])
-    assert d["--num_train_epochs"] == str(spec["optim"]["epochs"])
-    assert d["--per_device_train_batch_size"] == str(spec["optim"]["batch"])
+    assert d["--image_aug"] == "true"
+    assert d["--use_lora"] == "true"
+    assert d["--lora_rank"] == "32"
+    assert d["--use_quantization"] == "true"  # bnb8 -> official 4-bit (its only quant)
+    assert d["--save_latest_checkpoint_only"] == "true"
+    assert d["--run_id_note"] == spec["job_id"]
+    # the official loop is step-based over an infinite (repeating) dataset:
+    # 50 eps x 3 frames // (batch 4 x grad_accum 2) = 18 steps/epoch x 3 epochs
+    assert d["--max_steps"] == "54"
+    assert d["--save_steps"] == "54"  # one final checkpoint (+ LoRA merge)
 
-    ids = [f"ep_{i:04d}" for i in range(60)]
-    expected = set(crosscheck_subset(ids, spec["student"], spec["dataset"]))
-    eps_dir = pathlib.Path(d["--data_path"]) / "episodes"
-    got = {p.name for p in eps_dir.iterdir()}
-    assert got == expected and len(got) == 50
+    # the deterministic subset, materialized through the writer seam
+    assert len(calls) == 1
+    c = calls[0]
+    assert c["name"] == "toto"
+    assert c["root"] == str(job_dir / "crosscheck_rlds")
+    got = {s["steps"][0]["episode_index"] for s in c["samples"]}
+    expected = set(crosscheck_subset(
+        [f"ep_{i:04d}" for i in range(1, 61)], spec["student"], spec["dataset"]))
+    assert got == {int(e[3:]) for e in expected} and len(c["samples"]) == 50
+    assert all(len(s["steps"]) == 3 for s in c["samples"])
+    # the resolved artifact dirs (official exp_id subdirs) under the job dir
+    assert str(dirs["run_dir"]).startswith(str(job_dir / "crosscheck_out"))
+    assert str(dirs["adapter_dir"]).startswith(str(job_dir / "crosscheck_out"))
 
 
-def test_crosscheck_smaller_dataset_copies_all(tmp_path):
-    spec = _spec("crosscheck")
-    root = _fake_dataset(tmp_path, 30)
+def test_crosscheck_bf16_runs_official_unquantized(tmp_path):
+    spec = _spec("crosscheck", quant="bf16")
+    ds = _real_dataset(tmp_path)
     job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
-    argv = xf.translate(spec, root, job_dir)
-    d = dict(zip(argv[2::2], argv[3::2]))
-    eps = pathlib.Path(d["--data_path"]) / "episodes"
-    assert len(list(eps.iterdir())) == 30
+    argv, _dirs = xf.translate(spec, ds, job_dir, writer=_fake_rlds_writer()[0])
+    # bf16 has no bnb on the rocm leg: the official side runs unquantized
+    assert _flags(argv)["--use_quantization"] == "false"
+
+
+def test_crosscheck_smaller_dataset_uses_all(tmp_path):
+    spec = _spec("crosscheck")
+    ds = _real_dataset(tmp_path, episodes=30)
+    job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
+    writer, calls = _fake_rlds_writer()
+    argv, _dirs = xf.translate(spec, ds, job_dir, writer=writer)
+    assert len(calls[0]["samples"]) == 30  # fewer than 50 -> the whole dataset
+    assert _flags(argv)["--max_steps"] == "33"  # 90 frames // 8 = 11/epoch x 3
+
+
+def test_crosscheck_main_cpu_contract(tmp_path, monkeypatch):
+    """main() on CPU with both seams faked: the shared validator + fixed argv
+    + the env merge (WANDB_MODE=disabled over the inherited env, not a
+    replacement) + the artifacts contract on exit 0; a nonzero official exit
+    skips the manifest and propagates the code."""
+    from subprocess import CompletedProcess
+
+    from images import rlds_writer as rw
+    spec = _spec("crosscheck")
+    p = tmp_path / "wd" / "runs" / spec["job_id"] / "spec.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps(spec))
+    _real_dataset(tmp_path / "wd")  # main derives ds_root from the spec path
+    monkeypatch.setattr(rw, "write_rlds", _fake_rlds_writer()[0])
+    seen = {}
+
+    def fake_run(argv, **kw):
+        seen["argv"], seen["env"] = argv, kw.get("env")
+        return CompletedProcess(argv, 0 if seen.get("rc", 0) == 0 else 1)
+
+    monkeypatch.setattr(xf, "run_fixed_argv", fake_run)
+    # the official script would create these (exp_id subdirs); main writes the
+    # manifest from them on exit 0
+    o = spec["optim"]
+    exp = rw.exp_id(spec["model"], rw.RLDS_NAME, o["batch"] * o["grad_accum"],
+                    o["lr"], spec["lora"]["rank"], 0.0, True, spec["job_id"],
+                    spec["image_aug"])
+    (p.parent / "crosscheck_out" / exp).mkdir(parents=True)
+    (p.parent / "crosscheck_out" / "adapter-tmp" / exp).mkdir(parents=True)
+
+    assert xf.main(["--spec", str(p)]) == 0
+    assert seen["env"]["WANDB_MODE"] == "disabled"
+    assert "PATH" in seen["env"]  # merged, not a bare replacement
+    art = json.loads((p.parent / "artifacts.json").read_text())
+    assert [a["kind"] for a in art] == ["adapter", "merged"]
+
+    seen["rc"] = 1
+    (p.parent / "artifacts.json").unlink()
+    assert xf.main(["--spec", str(p)]) == 1
+    assert not (p.parent / "artifacts.json").exists()
 
 
 # -- dataset loading (CPU: engine._samples is pure — no GPU stack) ---------------

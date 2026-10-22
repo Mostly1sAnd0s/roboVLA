@@ -24,12 +24,12 @@
 # The openvla CODE is CLONED at a PINNED SHA (not pip-installed): the
 # engine uses the vendored prompt builder (images/vla_compat.py) + pure
 # token math, because `import prismatic` drags draccus + tensorflow (via
-# prismatic.vla.datasets). The clone exists for the crosscheck job, whose
-# rework against the current official finetune.py lands at node join
-# (Phase 1, §12 — it brings the official stack's own dependencies then).
+# prismatic.vla.datasets). The clone + the official-stack layer below serve
+# the crosscheck job (official vla-scripts/finetune.py on the deterministic
+# 50-episode RLDS subset — images/crosscheck_finetune.py + rlds_writer.py).
 #
 # Build (from the repo root):
-#   podman build -t robovla-runner-cuda:2026.10 -f images/Dockerfile.cuda .
+#   podman build -t robovla-runner-cuda:2026.10.1 -f images/Dockerfile.cuda .
 
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -67,6 +67,29 @@ RUN git init /opt/openvla \
     && git -C /opt/openvla fetch --depth 1 \
         https://github.com/openvla/openvla "${OPENVLA_SHA}" \
     && git -C /opt/openvla checkout FETCH_HEAD
+
+# The official fine-tune stack (crosscheck, §6): vla-scripts/finetune.py at
+# the pinned SHA needs its own dependencies — draccus (its config layer),
+# accelerate (the DDP PartialState), wandb (its logging; the wrapper execs it
+# with WANDB_MODE=disabled — no credentials on the LAN), and the RLDS/TFDS
+# data pipeline (tensorflow + tensorflow_datasets + the official dlimp fork,
+# a git dep pinned at its 2024-07 commit; tensorflow_graphics is the
+# official pin for the prismatic processor). Pins: draccus / TFDS /
+# TF-graphics are the official repo's pins; tensorflow is 2.19.1 because the
+# official 2.15 predates Python 3.12 (cp312 wheels start at 2.17) and this
+# image is 3.12. The official pyproject's torch / transformers / peft /
+# tokenizers pins are DELIBERATELY NOT followed — the image keeps the
+# probe-verified stack above (downgrading them would re-open the Phase 1
+# pins). TF is CPU-only here: the rlds loader sets
+# tf.config.set_visible_devices([], "GPU") (torch owns the GPU), so the
+# GPU wheel is chosen for stack faithfulness, not for a GPU path.
+RUN uv pip install \
+        draccus==0.8.0 accelerate==1.15.0 wandb==0.31.0 \
+        tensorflow==2.19.1 tensorflow_datasets==4.9.3 \
+        tensorflow_graphics==2021.12.3
+ARG DLIMP_SHA=040105d256bd28866cc6620621a3d5f7b6b91b46
+RUN uv pip install \
+        "dlimp @ git+https://github.com/moojink/dlimp_openvla@${DLIMP_SHA}"
 
 # Fixed-argv entrypoints (python scripts — never a shell)
 COPY images/bin /opt/robovla/bin

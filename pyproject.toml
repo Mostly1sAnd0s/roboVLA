@@ -9,6 +9,7 @@ dependencies = [
     "argon2-cffi>=25.1.0",
     "fastapi>=0.156.8",
     "httpx>=0.28.1",
+    "numpy>=2.0",
     "pillow>=13.0.0",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0", # fleet.yaml parsing (seam: text in -> config out; core stays pure)

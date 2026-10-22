@@ -8,8 +8,10 @@ fleet.yaml; default names below, overridable via env):
 These drive the REAL job program inside the REAL image (GPU passthrough +
 model volume, fixed argv, no shell) — the Phase 1 gate: the stack pins are
 finalized when ``gpu_selftest`` passes on the target node (§6, §12). The
-official crosscheck row runs the same way with ``type: crosscheck`` once the
-openvla pin is verified.
+``test_crosscheck_cuda`` row runs the official engine the same way: the
+wrapper materializes the deterministic 50-episode subset as an RLDS/TFDS
+dataset and execs the pinned ``vla-scripts/finetune.py`` (long row — run
+detached on a 12 GB node).
 
 Prereqs (skipped with a reason when absent, so a CPU box with GPU_TESTS=1
 degrades to skips, not failures): the podman image present, and the base
@@ -31,9 +33,11 @@ import sys
 import pytest
 
 REPO = pathlib.Path(__file__).parents[2]
-IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10")
+IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10.1")
 IMAGE_ROCM = os.environ.get("ROBOVLA_IMAGE_ROCM", "robovla-runner-rocm:2026.10")
 DATASET = "s01/stop-at-target/v1"  # the deterministic selftest dataset
+CROSSCHECK_DATASET = "s01/crosscheck-50/v1"  # the crosscheck row's 50-ep dataset
+CROSSCHECK_EPS, CROSSCHECK_FRAMES = 50, 20
 MODEL_DIR = pathlib.Path(os.environ.get(
     "ROBOVLA_MODEL_DIR",
     "~/.cache/huggingface/hub")).expanduser()  # the HF hub-cache dir
@@ -71,9 +75,10 @@ def _device_flags(image: str) -> list[str]:
             "--cap-add", "SYS_PTRACE", "--security-opt", "seccomp=unconfined"]
 
 
-def _run_job(image: str, spec: dict) -> subprocess.CompletedProcess:
+def _run_job(image: str, spec: dict, program: str = "robovla_job") -> subprocess.CompletedProcess:
     """The job program, in-container: GPU devices + workdir + model volume,
-    the agent's exact fixed argv (python + /opt/robovla/bin/robovla_job)."""
+    the agent's exact fixed argv (python + /opt/robovla/bin/<program> —
+    ``robovla_job`` for the engine jobs, ``finetune`` for the crosscheck)."""
     job_dir = WORK_DIR / "runs" / spec["job_id"]
     job_dir.mkdir(parents=True, exist_ok=True)
     (job_dir / "spec.json").write_text(json.dumps(spec))
@@ -93,30 +98,34 @@ def _run_job(image: str, spec: dict) -> subprocess.CompletedProcess:
         "-e", "ROBOVLA_WORKDIR=/data",
         "-e", "ROBOVLA_MODEL_DIR=/models",
         "-e", "HF_HUB_CACHE=/models",
-        image, "/opt/robovla/bin/robovla_job",
+        image, f"/opt/robovla/bin/{program}",
         "--spec", f"/data/runs/{spec['job_id']}/spec.json",
     ]
     return subprocess.run(argv, capture_output=True, text=True)
 
 
-def _prereqs(image: str, job_type: str) -> None:
+def _prereqs_image(image: str) -> None:
     if not _image_present(image):
         pytest.skip(f"image {image} not present (podman build -f images/"
                     f"Dockerfile.{ 'cuda' if 'cuda' in image else 'rocm' } .)")
     if not MODEL_DIR.is_dir():
         pytest.skip(f"model not downloaded to {MODEL_DIR} "
                     "(huggingface-cli download openvla/openvla-7b --cache-dir …)")
-    # selftest dataset: materialize the deterministic synthetic dataset in the
-    # job workdir (scripts/make_selftest_dataset.py — refuses to overwrite,
-    # so this is idempotent). Without it the engine skips the dataset-bound
-    # sections and the row passes VACUOUSLY (caught on host65, 2026-10-22:
-    # job exit 0 in ~15 s, no probe.json).
+
+
+def _materialize_dataset(dataset: str, episodes: int, frames: int, what: str) -> None:
+    """The deterministic synthetic dataset in the job workdir
+    (scripts/make_selftest_dataset.py — refuses to overwrite, so idempotent).
+    Without it the job skips the dataset-bound sections and the row passes
+    VACUOUSLY (caught on host65, 2026-10-22: job exit 0 in ~15 s, no
+    probe.json)."""
     r = subprocess.run(
         [sys.executable, str(REPO / "scripts" / "make_selftest_dataset.py"),
-         "--workdir", str(WORK_DIR), "--dataset", DATASET],
+         "--workdir", str(WORK_DIR), "--dataset", dataset,
+         "--episodes", str(episodes), "--frames", str(frames)],
         capture_output=True, text=True)
     if r.returncode != 0:
-        pytest.skip(f"selftest dataset materialization failed: "
+        pytest.skip(f"{what} dataset materialization failed: "
                     f"{r.stdout + r.stderr}")
 
 
@@ -131,7 +140,8 @@ def _assert_selftest_ok(spec: dict) -> None:
 
 @needs_gpu
 def test_gpu_selftest_cuda():
-    _prereqs(IMAGE_CUDA, "gpu_selftest")
+    _prereqs_image(IMAGE_CUDA)
+    _materialize_dataset(DATASET, 6, 8, "selftest")
     spec = _spec("gpu_selftest")
     cp = _run_job(IMAGE_CUDA, spec)
     assert cp.returncode == 0, cp.stdout + cp.stderr
@@ -140,8 +150,50 @@ def test_gpu_selftest_cuda():
 
 @needs_gpu
 def test_home_selftest_rocm():
-    _prereqs(IMAGE_ROCM, "home_selftest")
+    _prereqs_image(IMAGE_ROCM)
+    _materialize_dataset(DATASET, 6, 8, "selftest")
     spec = _spec("home_selftest")
     cp = _run_job(IMAGE_ROCM, spec)
     assert cp.returncode == 0, cp.stdout + cp.stderr
     _assert_selftest_ok(spec)
+
+
+def _assert_crosscheck_ok(spec: dict) -> None:
+    """The file-contract manifest from the official run: adapter (LoRA) +
+    merged model (bf16 full weights) under the job dir, with the official
+    dataset_statistics.json (the official predict path needs it next to the
+    merged model to de-normalize actions)."""
+    job_dir = WORK_DIR / "runs" / spec["job_id"]
+    art = json.loads((job_dir / "artifacts.json").read_text())
+    assert [a["kind"] for a in art] == ["adapter", "merged"]
+    adapter = (job_dir / art[0]["path"]).resolve()
+    merged = (job_dir / art[1]["path"]).resolve()
+    assert (adapter / "adapter_model.safetensors").is_file()
+    assert (merged / "dataset_statistics.json").is_file()
+    assert any(f.suffix in (".bin", ".safetensors")
+               for f in merged.iterdir() if f.is_file())
+
+
+@needs_gpu
+def test_crosscheck_cuda():
+    """The OFFICIAL engine on the deterministic 50-episode subset (the
+    crosscheck rework, 2026-10-22 — gate M5's "real training verified"):
+    the wrapper materializes the subset as an RLDS/TFDS dataset and runs
+    the pinned vla-scripts/finetune.py (torchrun nproc 1, official 4-bit,
+    WANDB_MODE=disabled). LONG row: 1000 frames // (batch 1 x grad_accum 8)
+    = 125 steps/epoch x 3 epochs — on a 12 GB node run it detached (setsid
+    nohup + poll the job log) and expect ~2-4 h; the 32 GB fleet nodes at
+    batch 4-8 are 4-8x faster."""
+    from robovla.core.spec import build_job_spec
+
+    _prereqs_image(IMAGE_CUDA)
+    _materialize_dataset(CROSSCHECK_DATASET, CROSSCHECK_EPS, CROSSCHECK_FRAMES,
+                         "crosscheck")
+    # batch 1: the 4070-class reality (the 32 GB fleet nodes take 4-8)
+    spec = build_job_spec(
+        job_id="j_20261022_0002", student="s01", job_type="crosscheck",
+        dataset=CROSSCHECK_DATASET, node_id="pai1",
+        node_agent="10.0.0.9:8601", budget_gb=18.0, batch=1).to_dict()
+    cp = _run_job(IMAGE_CUDA, spec, program="finetune")
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    _assert_crosscheck_ok(spec)
