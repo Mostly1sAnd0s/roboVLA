@@ -118,6 +118,16 @@ RUN uv pip install \
 ARG DLIMP_SHA=040105d256bd28866cc6620621a3d5f7b6b91b46
 RUN uv pip install --no-deps \
         "dlimp @ git+https://github.com/moojink/dlimp_openvla@${DLIMP_SHA}"
+# The openvla + prismatic packages themselves (the official install is
+# `pip install -e .`). --no-deps: the official pyproject pins torch==2.2.0 /
+# transformers==4.40.1 / peft==0.11.1 / tokenizers==0.19.1 /
+# tensorflow==2.15.0 — following them would re-open the Phase 1 pins. The
+# finetune import chain's third-party surface (torch, transformers, peft,
+# timm, einops-via-timm, huggingface_hub, dlimp, draccus, tensorflow,
+# tensorflow_datasets, the tfg stub above, wandb, accelerate) is all present;
+# the only prismatic modules importing extra deps (jsonlines, rich) are
+# pretraining/download tooling the crosscheck path never imports.
+RUN uv pip install --no-deps /opt/openvla
 
 # Fixed-argv entrypoints (python scripts — never a shell)
 COPY images/bin /opt/robovla/bin

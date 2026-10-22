@@ -1,0 +1,5 @@
+# Build metadata — never needed inside the image. Excluding it from the
+# context keeps the `COPY images` layer cache stable across Dockerfile edits
+# (otherwise every Dockerfile change re-runs the ~4 GB torch layer).
+images/Dockerfile.cuda
+images/Dockerfile.rocm
