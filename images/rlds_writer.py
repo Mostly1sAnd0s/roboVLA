@@ -26,14 +26,16 @@ Raw layout written (one TFDS example per trajectory):
       action.world_vector / rotation_delta / open_gripper   float32 (3/3/1)
       first / last / is_terminal / episode_index / frame_index / next
 
-A deliberately EMPTY ``val`` split is written alongside ``train``: the
-official loader uses split ``train`` only when a ``val`` split exists (else
-it slices ``train[:95%]``) — with the empty val the crosscheck trains on
-100% of the subset, the same data as the console engine. (If the primary
-write ever fails — e.g. this TFDS version rejects the empty split — the
-writer falls back to a train-only dataset and the official side trains
-``train[:95%]``; the real error is surfaced in the job log, and the
-degradation is documented in the results.)
+The writer first tries a deliberately EMPTY ``val`` split alongside
+``train``: the official loader uses split ``train`` only when a ``val``
+split exists (else it slices ``train[:95%]``), so an empty val would make
+the crosscheck train on 100% of the subset. TFDS 4.9.3 (the pinned
+version) REJECTS an empty split ("No examples were yielded" — verified on
+host65, 2026-10-22), so the documented fallback always fires: a train-only
+dataset, and the official side trains ``train[:95%]`` (47 of 50 episodes —
+the last 3 of the subset in input order, deterministically held out). The
+real primary error is surfaced in the job log; the degradation is
+documented in the results.
 
 The pure builders below are CPU-tested; :func:`write_rlds` is the lazy stack
 boundary (tensorflow / tensorflow_datasets imported on call — a box without
