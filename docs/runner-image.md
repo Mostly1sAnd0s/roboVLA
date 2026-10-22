@@ -181,6 +181,15 @@ ENTRYPOINT (agent boots instead of the job — now `--entrypoint
 exit 0 vacuously (now materialized via
 `scripts/make_selftest_dataset.py` in `_prereqs`).
 
+**Role of this box (2026-10-22):** until node2 (campus 5090 Ti) is online,
+host65 is the **development/test box**: crosscheck wrapper development and
+verification, the hardware rows, and any container/GPU work happen here —
+nothing waits on the 5090 except the Blackwell pin verification (first
+`gpu_selftest` at node2's join; the 50-episode crosscheck fits the 4070 at
+batch 1, tight as the selftest predicts). pai1 is **reserved for LLM
+development** (the assistant that drives development runs on it) and gets
+no openvla work.
+
 ## AMD / ROCm (home Strix Halo 8060S, gfx1151)
 
 **Status: designed, not yet verified** — the home lab is off-campus
