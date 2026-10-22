@@ -83,6 +83,12 @@ RUN git init /opt/openvla \
 # the GPU), so the GPU wheel is chosen for stack faithfulness, not for a GPU
 # path.
 #
+# tensorflow_metadata — pinned to 1.17.3 (tfds's floating dep). The latest
+# release (1.21.0) ships pb2 gencode built with protobuf 6.x, which fails the
+# protobuf runtime-version check on load, because TF 2.19.1 forces
+# protobuf<6.0.0dev (runtime 5.29.6). 1.17.3 is the last pre-validation
+# release (same era as tfds 4.9.3).
+#
 # tensorflow_graphics — the ONE official pin this image CANNOT follow.
 # tensorflow-graphics==2021.12.3 (latest release AND the official pin)
 # depends on tensorflow-addons>=0.10.0, and tensorflow-addons 0.23.0 (latest)
@@ -100,6 +106,7 @@ RUN git init /opt/openvla \
 RUN uv pip install \
         draccus==0.8.0 accelerate==1.15.0 wandb==0.31.0 \
         tensorflow==2.19.1 tensorflow_datasets==4.9.3 \
+        tensorflow_metadata==1.17.3 \
     && uv pip install /opt/robovla/images/tfg_stub
 # dlimp installed --no-deps: its setup.py hard-pins tensorflow==2.15.0
 # (predates 3.12, no cp312 wheel), which would fail resolution / force a
