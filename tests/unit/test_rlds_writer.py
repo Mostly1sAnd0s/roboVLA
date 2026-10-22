@@ -33,7 +33,11 @@ def test_action_split_course_convention():
     a = rw.action_to_rlds((0.1, -0.2, 0.3, 0.0, 0.0, 0.0, 0.0))
     assert a == {"world_vector": [0.1, -0.2, 0.3],
                  "rotation_delta": [0.0, 0.0, 0.0],
-                 "open_gripper": [0.0]}
+                 # a per-frame SCALAR (host65 attempt 5, 2026-10-22): the
+                 # official toto transform does open_gripper[:, None] — a
+                 # (1,)-shaped per-frame value reads back [F,1,1] through
+                 # the concat and breaks the official pipeline's rank
+                 "open_gripper": 0.0}
 
 
 def test_action_split_rejects_bad_dims():
@@ -269,6 +273,13 @@ def test_build_builder_class_example_layout():
     act = s0["action"]["world_vector"]
     assert isinstance(act, np.ndarray) and act.dtype == np.float32
     assert list(act) == [0.1, 0.2, 0.3]
+    # open_gripper crosses the boundary as a 0-dim float32 (a per-frame
+    # SCALAR — the official toto transform's open_gripper[:, None] breaks
+    # on a (1,)-shaped value; host65 attempt 5, 2026-10-22)
+    og = s0["action"]["open_gripper"]
+    assert isinstance(og, np.ndarray) and og.ndim == 0 \
+        and og.dtype == np.float32
+    assert float(og) == 0.0
 
 
 # -- TFDS name registration (host65 attempt 2, 2026-10-22) -------------------
@@ -370,6 +381,29 @@ def test_write_rlds_both_writes_fail_is_clean_internal(tmp_path, monkeypatch):
         rw.write_rlds(root, rw.RLDS_NAME, [_sample()])
     assert ei.value.code == "internal"
     assert "fallback boom" in ei.value.message
+
+
+def test_write_stack_open_gripper_is_scalar_feature(tmp_path, monkeypatch):
+    """The writer's schema must declare open_gripper WITHOUT a Tensor shape
+    (a per-frame scalar). host65 attempt 5 (2026-10-22): a (1,)-shaped
+    per-frame value made the official toto_dataset_transform's
+    ``tf.concat([wv (F,3), rd (F,3), open_gripper[:, None] (F,1,1)])`` fail
+    with 'Shape must be rank 2 but is rank 3' — the real OXE toto data
+    carries one scalar per frame."""
+    fake_tfds = _fake_tfds()
+    _fake_stack(monkeypatch, _fake_tf_module(), fake_tfds)
+    captured = {}
+
+    def capture(name, samples, tfds, features, **kw):
+        captured["features"] = features
+        return fake_tfds.core.GeneratorBasedBuilder
+
+    monkeypatch.setattr(rw, "build_builder_class", capture)
+    rw._write_with_stack(fake_tfds, tmp_path, "toto", [_sample()])
+    act = captured["features"]["steps"]["action"]
+    assert act["world_vector"]["shape"] == (3,)
+    assert act["rotation_delta"]["shape"] == (3,)
+    assert "shape" not in act["open_gripper"]  # scalar per frame
 
 
 # -- the lazy boundary: no tensorflow -> clean §9.6 internal ----------------------

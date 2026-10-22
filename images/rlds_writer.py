@@ -23,7 +23,7 @@ Raw layout written (one TFDS example per trajectory):
     steps:
       observation.image                          jpeg bytes, 224^2 (prep size)
       observation.natural_language_instruction   task string
-      action.world_vector / rotation_delta / open_gripper   float32 (3/3/1)
+      action.world_vector / rotation_delta / open_gripper   float32 (3/3/scalar)
       first / last / is_terminal / episode_index / frame_index / next
 
 The writer first tries a deliberately EMPTY ``val`` split alongside
@@ -77,9 +77,13 @@ def action_to_rlds(action: Sequence[float]) -> dict[str, list[float]]:
     """One 7-dim course action -> the official EEF_POS action parts.
 
     ``(vx, vy, wz, 0, 0, 0, 0.0)`` -> ``world_vector (3) + rotation_delta (3)
-    + open_gripper (1)`` — the official ``toto`` standardize transform
-    concats them back in exactly this order, so the official pipeline sees
-    our 7-dim row unchanged.
+    + open_gripper (scalar)`` — the official ``toto`` standardize transform
+    concats ``[world_vector, rotation_delta, open_gripper[:, None]]``, so
+    open_gripper must be ONE SCALAR PER FRAME (host65 attempt 5, 2026-10-22:
+    a (1,)-shaped per-frame value reads back ``[F, 1]``, the transform's
+    ``[:, None]`` makes it ``[F, 1, 1]``, and the concat fails with
+    'Shape must be rank 2 but is rank 3'). The transform re-adds the axis,
+    so the official pipeline sees our 7-dim row unchanged.
     """
     if len(action) != ACTION_DIMS:
         raise RobovlaError("validation",
@@ -93,7 +97,7 @@ def action_to_rlds(action: Sequence[float]) -> dict[str, list[float]]:
                                f"rlds action dim {i} must be a finite number")
         out[i] = float(v)
     return {"world_vector": out[0:3], "rotation_delta": out[3:6],
-            "open_gripper": out[6:7]}
+            "open_gripper": out[6]}  # scalar (see the docstring)
 
 
 def _episode_index(episode_id: str) -> int:
@@ -375,7 +379,10 @@ def _write_with_stack(tfds, root: str | Path, name: str,
         "action": tfds.features.FeaturesDict({
             "world_vector": tfds.features.Tensor(shape=(3,), dtype=np.float32),
             "rotation_delta": tfds.features.Tensor(shape=(3,), dtype=np.float32),
-            "open_gripper": tfds.features.Tensor(shape=(1,), dtype=np.float32),
+            # SCALAR per frame — NOT Tensor((1,)): the official toto
+            # transform's open_gripper[:, None] breaks on the (1,) shape
+            # (host65 attempt 5, 2026-10-22 — 'rank 2 but is rank 3').
+            "open_gripper": tfds.features.Scalar(dtype=np.float32),
         }),
         "first": tfds.features.Scalar(dtype=np.bool_),
         "last": tfds.features.Scalar(dtype=np.bool_),
