@@ -217,12 +217,28 @@ def test_build_builder_class_contract():
     b = cls.__new__(cls)  # the (data_dir) __init__ is the TFDS boundary
     splits = cls._split_generators(b, None)
     assert set(splits) == {"train", "val"}
-    assert sum(1 for _ in splits["train"]) == 50
+    train_pairs = list(splits["train"])
+    assert len(train_pairs) == 50
+    # The TFDS 4.x (pinned 4.9.3) contract: {split: iterable of
+    # (key, example) PAIRS} — the base _download_and_prepare hands each
+    # per-split generator to split_builder.submit_split_generation, which
+    # unpacks `for key, example in generator` (host65 attempt 4, 2026-10-22:
+    # raw examples broke that unpack). Keys index the trajectories.
+    keys = [key for key, _ex in train_pairs]
+    assert keys == list(range(50))
+    assert all(set(ex) == {"steps"} for _k, ex in train_pairs)
     assert sum(1 for _ in splits["val"]) == 0  # empty on purpose
-    # _generate_examples must stay in lockstep with _split_generators (the
-    # base writer calls the latter; the former only satisfies the abstract
-    # method).
-    assert set(cls._generate_examples(b)) == {"train", "val"}
+    # _generate_examples (the legacy per-split contract, never executed in
+    # our dict-form path) must stay in lockstep with _split_generators'
+    # train generator — the same (key, example) pairs.
+    legacy = list(cls._generate_examples(b))
+    assert len(legacy) == len(train_pairs)
+    for (k1, e1), (k2, e2) in zip(legacy, train_pairs):
+        assert k1 == k2
+        assert e1["steps"][0]["observation"]["image"] == \
+            e2["steps"][0]["observation"]["image"]
+        assert list(e1["steps"][0]["action"]["world_vector"]) == \
+            list(e2["steps"][0]["action"]["world_vector"])
     train_only = rw.build_builder_class("toto", samples, fake, features=None,
                                         val_empty=False)
     assert set(train_only._split_generators(
@@ -236,7 +252,8 @@ def test_build_builder_class_example_layout():
                                      [(0.1, 0.2, 0.3, 0.0, 0.0, 0.0, 0.0),
                                       (0.4, 0.5, 0.6, 0.0, 0.0, 0.0, 0.0)])
     cls = rw.build_builder_class("toto", [sample], fake, features=None)
-    (example,) = list(cls._split_generators(cls.__new__(cls), None)["train"])
+    (_key, example) = next(iter(cls._split_generators(
+        cls.__new__(cls), None)["train"]))
     assert len(example["steps"]) == 2
     s0, s1 = example["steps"]
     assert s0["observation"]["image"] == b"frame-0"

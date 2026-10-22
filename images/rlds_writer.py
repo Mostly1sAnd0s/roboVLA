@@ -249,9 +249,19 @@ def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
             features=features,
             description="roboVLA crosscheck subset (images/rlds_writer.py).")
 
+    def _train_pairs():
+        # (key, example) pairs — the TFDS 4.x contract (pinned 4.9.3):
+        # the base _download_and_prepare hands each per-split generator to
+        # split_builder.submit_split_generation, which unpacks
+        # `for key, example in generator` (host65 attempt 4, 2026-10-22:
+        # raw examples broke that unpack). The key indexes the trajectory
+        # (shard assignment is hash(key, split_name)).
+        for key, sample in enumerate(samples):
+            yield key, _example(sample)
+
     def _split_generators(self, dl_manager):
         # No downloads (the data is in-memory samples); dl_manager unused.
-        splits = {"train": iter(map(_example, samples))}
+        splits = {"train": _train_pairs()}
         if val_empty:
             # Empty on purpose (module docstring): the official loader then
             # uses split "train" in full, not "train[:95%]".
@@ -259,11 +269,12 @@ def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
         return splits
 
     def _generate_examples(self, **kwargs):
-        # The base _download_and_prepare calls _split_generators directly
-        # (verified in tfds 4.9.3); this exists to satisfy
-        # GeneratorBasedBuilder's abstract method — kept in lockstep so it
-        # cannot silently diverge.
-        return _split_generators(self, None)
+        # The legacy (pre-dict) per-split contract — never actually executed
+        # in our path (the dict-form _split_generators short-circuits
+        # SplitBuilder.normalize_legacy_split_generators). It exists to
+        # satisfy GeneratorBasedBuilder's abstract method and is kept in
+        # lockstep with the train generator so it cannot silently diverge.
+        yield from _train_pairs()
 
     def _make() -> type:
         # Class name lowercases to `name` (the TFDS output dir) AND the
