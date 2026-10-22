@@ -120,14 +120,62 @@ def test_exp_id_formula():
 # `_split_generators`, which is what the base _download_and_prepare calls.
 
 
-def _fake_tfds():
-    """Just enough of the tfds surface for build_builder_class: the class
-    construction is pure Python over the injected module object (no real
-    TF import — the CPU suite never carries the stack)."""
+def _fake_tfds(dp_failures=None):
+    """Just enough of the tfds surface for build_builder_class + the
+    write_rlds boundary: the class construction is pure Python over the
+    injected module object (no real TF import — the CPU suite never
+    carries the stack).
+
+    ``core.registered`` mimics tensorflow_datasets.core.registered (the
+    host65 attempt-2 failure, 2026-10-22): builder classes register by
+    name at creation and a second class with the same name raises
+    ValueError; ``skip_registration()`` opts out. ``dp_failures`` queues
+    ``download_and_prepare()`` failures (primary, then fallback)."""
     import types
 
+    class _Registered:
+        def __init__(self):
+            self.registry: dict[str, type] = {}
+            self.entered = 0
+            self.dp_done: list[str] = []
+            self.dp_failures: list[str] = list(dp_failures or [])
+            self._skipping = False
+
+        class _skip_ctx:
+            def __init__(self, owner):
+                self._owner = owner
+
+            def __enter__(self):
+                self._owner._skipping = True
+                self._owner.entered += 1
+                return self
+
+            def __exit__(self, *exc):
+                self._owner._skipping = False
+                return False
+
+        def skip_registration(self):
+            return self._skip_ctx(self)
+
+    registry = _Registered()
+
     class _GeneratorBasedBuilder:
-        pass
+        def __init_subclass__(cls, **kwargs):
+            name = getattr(cls, "name", None)
+            if registry._skipping or name is None:
+                return
+            if name in registry.registry:
+                raise ValueError(
+                    f"Dataset with name {name} already registered.")
+            registry.registry[name] = cls
+
+        def __init__(self, data_dir=None):
+            self.data_dir = data_dir
+
+        def download_and_prepare(self):
+            if registry.dp_failures:
+                raise RuntimeError(registry.dp_failures.pop(0))
+            registry.dp_done.append(str(self.data_dir))
 
     class _DatasetBuilder:
         pass
@@ -136,10 +184,18 @@ def _fake_tfds():
         def __init__(self, s):
             self.s = s
 
+    def identity(*args, **kwargs):
+        # identity features (the fake write never validates the schema)
+        return args[0] if args else kwargs
+
     return types.SimpleNamespace(core=types.SimpleNamespace(
         GeneratorBasedBuilder=_GeneratorBasedBuilder,
         DatasetBuilder=_DatasetBuilder,
-        Version=_Version))
+        Version=_Version,
+        registered=registry),
+        features=types.SimpleNamespace(
+            FeaturesDict=identity, Image=identity, Text=identity,
+            Tensor=identity, Scalar=identity, Dataset=identity))
 
 
 def test_build_builder_class_contract():
@@ -190,6 +246,93 @@ def test_build_builder_class_example_layout():
     act = s0["action"]["world_vector"]
     assert isinstance(act, np.ndarray) and act.dtype == np.float32
     assert list(act) == [0.1, 0.2, 0.3]
+
+
+# -- TFDS name registration (host65 attempt 2, 2026-10-22) -------------------
+#
+# The writer creates the builder class TWICE under one name: the primary
+# write (train + empty val) and the train-only fallback. TFDS registers
+# builder classes by name at creation (tensorflow_datasets/core/
+# registered.py — a second class with the same name raises ValueError),
+# so the fallback's class hit 'Dataset with name toto already registered'
+# and the wrapper mislabeled it 'unreadable spec'. The official loader
+# never sees a writer-side class — its process resolves the dataset from
+# files (tfds.builder's file-based fallback, read_only_builder.
+# builder_from_files) — so both creations must skip registration.
+
+
+def test_builder_class_creation_skips_registration():
+    fake = _fake_tfds()
+    samples = [_sample()]
+    primary = rw.build_builder_class("toto", samples, fake, features=None)
+    fallback = rw.build_builder_class("toto", samples, fake, features=None,
+                                      val_empty=False)
+    assert primary.__name__ == fallback.__name__ == "Toto"
+    # both creations ran inside skip_registration (entered, then balanced)
+    reg = fake.core.registered
+    assert reg.entered == 2 and reg._skipping is False
+    # nothing leaked into the registry: the official process must resolve
+    # the dataset from files, never from a writer-side class
+    assert "toto" not in reg.registry
+
+
+# -- the lazy boundary: the write path (fake stack, no real TF) ---------------
+
+
+def _fake_stack(monkeypatch, fake_tf, fake_tfds):
+    """Route the lazy ``import tensorflow`` / ``import tensorflow_datasets``
+    inside write_rlds to fakes (the CPU suite never carries the stack)."""
+    real_import = builtins.__import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "tensorflow":
+            return fake_tf
+        if name == "tensorflow_datasets":
+            return fake_tfds
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fake_import)
+
+
+def _fake_tf_module():
+    import types
+    return types.SimpleNamespace(config=types.SimpleNamespace(
+        set_visible_devices=lambda *a, **k: None))
+
+
+def test_write_rlds_primary_failure_falls_back(tmp_path, capsys,
+                                               monkeypatch):
+    """The primary write (train + empty val) fails -> the REAL error is
+    surfaced (host65 attempt 2 swallowed it behind 'empty val split
+    rejected'), the partial dir is cleared, and the train-only fallback
+    completes."""
+    fake_tfds = _fake_tfds(dp_failures=["empty val split rejected (fake)"])
+    _fake_stack(monkeypatch, _fake_tf_module(), fake_tfds)
+    root = tmp_path / "rlds"
+    root.mkdir()
+    (root / rw.RLDS_NAME).mkdir()  # the partial dir the failed write left
+    rw.write_rlds(root, rw.RLDS_NAME, [_sample()])
+    out = capsys.readouterr().out
+    assert "primary write failed" in out
+    assert "RuntimeError: empty val split rejected (fake)" in out
+    reg = fake_tfds.core.registered
+    assert reg.dp_done == [str(root)]  # the fallback write completed
+    assert reg.entered == 2 and "toto" not in reg.registry
+
+
+def test_write_rlds_both_writes_fail_is_clean_internal(tmp_path, monkeypatch):
+    """Primary AND fallback fail -> a clean §9.6 internal carrying the
+    REAL fallback error (host65 attempt 2: the fallback's raw ValueError
+    escaped the boundary and the wrapper mislabeled it 'unreadable
+    spec' — never a bare traceback)."""
+    fake_tfds = _fake_tfds(dp_failures=["primary boom", "fallback boom"])
+    _fake_stack(monkeypatch, _fake_tf_module(), fake_tfds)
+    root = tmp_path / "rlds"
+    root.mkdir()
+    with pytest.raises(RobovlaError) as ei:
+        rw.write_rlds(root, rw.RLDS_NAME, [_sample()])
+    assert ei.value.code == "internal"
+    assert "fallback boom" in ei.value.message
 
 
 # -- the lazy boundary: no tensorflow -> clean §9.6 internal ----------------------

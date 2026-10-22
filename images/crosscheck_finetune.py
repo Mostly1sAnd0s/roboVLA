@@ -162,10 +162,24 @@ def main(argv: list[str] | None = None) -> int:
         print("finetune: usage: finetune --spec <spec.json>", file=sys.stderr)
         return 2
     spec_path = argv[1]
+    # The spec-read stage only: a missing (OSError) or malformed (json.
+    # JSONDecodeError is a ValueError) spec file is 'unreadable spec'.
+    # Nothing else may be swallowed by this handler (host65 attempt 2:
+    # a writer-side ValueError leaked in here and was mislabeled).
     try:
         with open(spec_path) as f:
             raw = json.load(f)
         spec = validate_job_spec(raw).to_dict()
+    except RobovlaError as e:
+        print(f"finetune: {e.code}: {e.message}", file=sys.stderr)
+        return 1
+    except (OSError, ValueError) as e:
+        print(f"finetune: validation: unreadable spec {spec_path}: {e}",
+              file=sys.stderr)
+        return 1
+    # The prepare stage (dispatch check + translate/RLDS materialization):
+    # RobovlaErrors carry their own §9.6 code; anything else is internal.
+    try:
         if spec["type"] != "crosscheck":
             raise RobovlaError(
                 "validation", f"not a crosscheck job: {spec['type']!r}")
@@ -175,8 +189,8 @@ def main(argv: list[str] | None = None) -> int:
     except RobovlaError as e:
         print(f"finetune: {e.code}: {e.message}", file=sys.stderr)
         return 1
-    except (OSError, ValueError) as e:
-        print(f"finetune: validation: unreadable spec {spec_path}: {e}",
+    except Exception as e:
+        print(f"finetune: internal: {type(e).__name__}: {e}",
               file=sys.stderr)
         return 1
     try:

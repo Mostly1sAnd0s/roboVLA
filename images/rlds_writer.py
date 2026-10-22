@@ -29,14 +29,17 @@ Raw layout written (one TFDS example per trajectory):
 A deliberately EMPTY ``val`` split is written alongside ``train``: the
 official loader uses split ``train`` only when a ``val`` split exists (else
 it slices ``train[:95%]``) — with the empty val the crosscheck trains on
-100% of the subset, the same data as the console engine. (If the TFDS build
-ever rejects an empty split, the writer falls back to a train-only dataset
-and the official side trains ``train[:95%]`` — documented degradation.)
+100% of the subset, the same data as the console engine. (If the primary
+write ever fails — e.g. this TFDS version rejects the empty split — the
+writer falls back to a train-only dataset and the official side trains
+``train[:95%]``; the real error is surfaced in the job log, and the
+degradation is documented in the results.)
 
 The pure builders below are CPU-tested; :func:`write_rlds` is the lazy stack
 boundary (tensorflow / tensorflow_datasets imported on call — a box without
-them fails with a clean §9.6 ``internal``, never a traceback, per the
-engine's lazy-boundary rule §11). TF never touches the GPU:
+them, or an unexpected stack failure, fails with a clean §9.6 ``internal``,
+never a traceback, per the engine's lazy-boundary rule §11). TF never
+touches the GPU:
 ``set_visible_devices([], "GPU")`` at the boundary (the official rlds loader
 does the same; torch owns the GPU).
 """
@@ -253,20 +256,38 @@ def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
         # cannot silently diverge.
         return _split_generators(self, None)
 
-    # Class name lowercases to `name` (the TFDS output dir) AND the explicit
-    # `name` attribute — belt and suspenders for the tfds name derivation.
-    return type(name[0].upper() + name[1:],
-                (tfds.core.GeneratorBasedBuilder,), {
-                    "name": name,
-                    "VERSION": tfds.core.Version(RLDS_VERSION),
-                    "RELEASE_NOTES": {RLDS_VERSION:
-                                      "roboVLA crosscheck subset "
-                                      "(deterministic, seeded per student "
-                                      "+ dataset version)."},
-                    "_info": _info,
-                    "_split_generators": _split_generators,
-                    "_generate_examples": _generate_examples,
-                })
+    def _make() -> type:
+        # Class name lowercases to `name` (the TFDS output dir) AND the
+        # explicit `name` attribute — belt and suspenders for the tfds
+        # name derivation.
+        return type(name[0].upper() + name[1:],
+                    (tfds.core.GeneratorBasedBuilder,), {
+                        "name": name,
+                        "VERSION": tfds.core.Version(RLDS_VERSION),
+                        "RELEASE_NOTES": {RLDS_VERSION:
+                                          "roboVLA crosscheck subset "
+                                          "(deterministic, seeded per student "
+                                          "+ dataset version)."},
+                        "_info": _info,
+                        "_split_generators": _split_generators,
+                        "_generate_examples": _generate_examples,
+                    })
+
+    # TFDS registers a builder class by name at creation (tensorflow_
+    # datasets/core/registered.py — a second class with the same name
+    # raises ValueError). The writer creates this class TWICE: the primary
+    # write and the train-only fallback (host65 attempt 2, 2026-10-22:
+    # the fallback's class hit 'Dataset with name toto already
+    # registered'). Both creations skip registration: the official loader
+    # resolves the dataset from FILES in its own process (tfds.builder's
+    # file-based fallback — read_only_builder.builder_from_files), never
+    # from a writer-side class.
+    registered = getattr(tfds.core, "registered", None)
+    skip = getattr(registered, "skip_registration", None)
+    if callable(skip):
+        with skip():
+            return _make()
+    return _make()
 
 
 def write_rlds(root: str | Path, name: str,
@@ -291,7 +312,27 @@ def write_rlds(root: str | Path, name: str,
             f"crosscheck stack unavailable (tensorflow): {e}") from e
     # torch owns the GPU on this node (the official rlds loader does the same)
     tf.config.set_visible_devices([], "GPU")
+    try:
+        _write_with_stack(tfds, root, name, samples)
+    except RobovlaError:
+        raise
+    except Exception as e:
+        # The lazy-boundary rule (§11): any unexpected stack failure is a
+        # clean §9.6 internal — never a raw exception that the wrapper's
+        # spec-read handler could mislabel (host65 attempt 2).
+        raise RobovlaError(
+            "internal",
+            f"crosscheck RLDS materialization failed: "
+            f"{type(e).__name__}: {e}") from e
 
+
+def _write_with_stack(tfds, root: str | Path, name: str,
+                      samples: Sequence[dict[str, Any]]) -> None:
+    """The TFDS write proper: the features schema + the primary write
+    (train + empty val) + the documented train-only fallback. Unexpected
+    exceptions propagate to :func:`write_rlds` (the RobovlaError boundary);
+    RobovlaErrors (the validation side) pass through untouched.
+    """
     step_features = tfds.features.FeaturesDict({
         "observation": tfds.features.FeaturesDict({
             "image": tfds.features.Image(
@@ -318,18 +359,21 @@ def write_rlds(root: str | Path, name: str,
     features = tfds.features.FeaturesDict({"steps":
                                            tfds.features.Dataset(step_features)})
 
-    builder_cls = build_builder_class(name, samples, tfds, features)
     try:
-        builder_cls(data_dir=str(root)).download_and_prepare()
+        build_builder_class(name, samples, tfds, features)(
+            data_dir=str(root)).download_and_prepare()
         return
-    except Exception:
-        # Documented fallback: if this TFDS version rejects an empty split,
-        # write train-only (the official side then trains "train[:95%]"). A
-        # failed write may leave partial files behind — clear the dataset
-        # dir before the retry (tfds refuses to write over an existing one).
-        print(f"rlds_writer: empty val split rejected — falling back to a "
-              f"train-only dataset (official side will use train[:95%])",
-              flush=True)
+    except Exception as e:
+        # Documented fallback: if the primary write fails (e.g. this TFDS
+        # version rejects the empty val split), write train-only — the
+        # official side then trains "train[:95%]". The REAL error is
+        # surfaced (host65 attempt 2 swallowed it behind the fallback
+        # message). A failed write may leave partial files behind — clear
+        # the dataset dir before the retry (tfds refuses to write over an
+        # existing one).
+        print(f"rlds_writer: primary write failed ({type(e).__name__}: {e}) "
+              f"— falling back to a train-only dataset (official side will "
+              f"use train[:95%])", flush=True)
         shutil.rmtree(Path(root) / name, ignore_errors=True)
     build_builder_class(name, samples, tfds, features,
                         val_empty=False)(data_dir=str(root)

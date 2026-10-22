@@ -345,6 +345,40 @@ def test_crosscheck_main_cpu_contract(tmp_path, monkeypatch):
     assert not (p.parent / "artifacts.json").exists()
 
 
+def test_crosscheck_main_writer_unexpected_error_is_internal(
+        tmp_path, monkeypatch, capsys):
+    """host65 attempt 2 (2026-10-22): a writer-side ValueError leaked past
+    translate() and main()'s spec-read handler mislabeled it 'unreadable
+    spec'. The prepare stage's unexpected (non-RobovlaError) failures now
+    surface as a clean §9.6 internal."""
+    from images import rlds_writer as rw
+    spec = _spec("crosscheck")
+    p = tmp_path / "wd" / "runs" / spec["job_id"] / "spec.json"
+    p.parent.mkdir(parents=True)
+    p.write_text(json.dumps(spec))
+    _real_dataset(tmp_path / "wd")
+
+    def broken_writer(root, name, samples):
+        raise ValueError("Dataset with name toto already registered.")
+
+    monkeypatch.setattr(rw, "write_rlds", broken_writer)
+    assert xf.main(["--spec", str(p)]) == 1
+    err = capsys.readouterr().err
+    assert ("internal: ValueError: Dataset with name toto already "
+            "registered.") in err
+    assert "unreadable spec" not in err
+
+
+def test_crosscheck_main_malformed_spec_still_unreadable(tmp_path, capsys):
+    """The split error handling must not lose the genuine spec-read path:
+    a malformed spec file is still 'unreadable spec' (not internal)."""
+    p = tmp_path / "wd" / "runs" / "j_20261021_0001" / "spec.json"
+    p.parent.mkdir(parents=True)
+    p.write_text("{not json")
+    assert xf.main(["--spec", str(p)]) == 1
+    assert "unreadable spec" in capsys.readouterr().err
+
+
 # -- dataset loading (CPU: engine._samples is pure — no GPU stack) ---------------
 
 
