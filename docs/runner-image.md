@@ -135,11 +135,51 @@ setuid step — see the uidmap note above):
    the setuid `newuidmap`/`newgidmap` exist; until then every `podman`
    command dies at namespace setup.
 
-Verified on host65 up to that boundary: `podman --version` (5.8.5), all
-`ldd` clean, CDI spec generated for the 4070. The **agent + gpu_selftest
-pass end-to-end on this box via the direct-venv path** (README, 2026-10-21)
-— the container path shares the same image/agent/engine, so the only
-container-specific gap is the build + run under podman itself.
+**Verified end-to-end on host65 (2026-10-22)** — the root action landed
+(`apt-get install -y uidmap`) and the container path is GREEN:
+
+- PATH shadowing: podman finds `newuidmap` **via PATH** — `tools/bin` (the
+  non-setuid rpm copy) shadows `/usr/bin`, so even with `uidmap` installed
+  the namespace setup still fails. Fix: `ln -sf /usr/bin/newuidmap
+  tools/bin/newuidmap` (same for `newgidmap`).
+- User-level `~/.config/containers/policy.json`
+  (`default: [{type: insecureAcceptAnything}]`) — no system policy.json on a
+  box without distro podman; fleet nodes get the distro's signed policy.
+- User-level `~/.config/containers/registries.conf`
+  (`unqualified-search-registries = ["docker.io", "quay.io"]`) — without it
+  short names (`nvidia/cuda:…`) fail to resolve.
+- `[network] default_rootless_network_cmd = "slirp4netns"` in
+  `containers.conf` — **podman 5.x's compiled-in rootless default is
+  `pasta`** (config `default.go`, no fallback when the pasta binary is
+  absent); without this every container dies at namespace setup with
+  "could not find pasta".
+- `[engine] helper_binaries_dir = ['…/tools/bin']` (an **array**) — podman
+  resolves helper binaries like `rootlessport` here, not in `$PATH`.
+- `rootlessport` (needed for rootless `-p` publishing) is not in the CS9
+  rpm set: cross-compile it from podman's own source —
+  `git clone --branch v5.8.0 --filter=blob:none --sparse
+  https://github.com/containers/podman; git sparse-checkout set cmd vendor`…
+  or full checkout + `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build
+  -mod=vendor -o rootlessport ./cmd/rootlessport` → `tools/bin/`
+  (statically linked, ~5 MB).
+
+Results: alpine rootless smoke test OK; `podman build` completed all 15
+steps (`robovla-runner-cuda:2026.10`); the containerized agent (CDI
+`--device nvidia.com/gpu=all`, workdir → `/data`, HF hub cache →
+`/models:ro`, `HF_HUB_CACHE=/models`, `-p <lan-ip>:8601:8601`) reports
+`/health` with the 4070 visible; `robovla cli gpu_selftest` over the LAN
+passes end-to-end (`j_20261022_0001`: probe 7×[0,1], 10-step QLoRA
+12.20 → 2.08 at 12227 MB / 98% VRAM); `GPU_TESTS=1 uv run pytest -m
+hardware` (venv with the console wheel + `pip install pytest`) = **1
+passed** (CUDA row, in-image job via CDI) **/ 1 skipped** (ROCm row — no
+image on this box, by design). The hardware rows also caught three
+test-level defects the CPU suite can't see (pinned in
+`tests/hardware/test_selftest.py`): the CUDA row's stale AMD device lines
+(→ CDI), `podman run` appending the after-image argv to the image
+ENTRYPOINT (agent boots instead of the job — now `--entrypoint
+/opt/venv/bin/python`), and the missing selftest dataset making the job
+exit 0 vacuously (now materialized via
+`scripts/make_selftest_dataset.py` in `_prereqs`).
 
 ## AMD / ROCm (home Strix Halo 8060S, gfx1151)
 
@@ -179,7 +219,9 @@ fwd/bwd; no 8-bit section, no bnb).
 | container agent exits instantly, exit 0, zero output | ENTRYPOINT was `-m agent.server` (no `__main__` guard) — must be `-m agent`; pinned by `tests/integration/test_agent_entrypoint.py` |
 | job crashes `No such file or directory: /opt/robovla/bin/robovla_job` | `ROBOVLA_JOB_BIN` not wired (now `partial(job_argv, bin_path=cfg.job_bin)` in `agent/server.py`) |
 | `ImportError: cannot import name 'load_episode' from 'robovla.episode'` | it is the file seam `robovla.fs` (`images/engine.py`) |
-| `write to uid_map failed: Operation not permitted` | non-setuid `newuidmap` — install the distro `uidmap` as root |
+| `write to uid_map failed: Operation not permitted` | non-setuid `newuidmap` — install the distro `uidmap` as root; if `tools/bin` is first in `$PATH`, symlink `tools/bin/newuidmap` → `/usr/bin/newuidmap` (podman resolves it via PATH) |
+| `could not find pasta, the network namespace can't be configured` | podman 5.x's compiled-in rootless default backend is `pasta` (no fallback) — set `[network] default_rootless_network_cmd = "slirp4netns"` in `containers.conf` |
+| `could not find "rootlessport" in one of […]` / `Failed to obtain podman configuration: … helper_binaries_dir` | rootless `-p` needs the `rootlessport` binary in `[engine] helper_binaries_dir` (**array**, not `$PATH`); it is not in the CS9 set — cross-compile `cmd/rootlessport` from the matching podman tag (see scratch-box section) |
 | torch 2.14+cu130 appears in the image | torch+torchvision installed separately (pin drift) — one uv command, cu128 index |
 | `timm` version error at model load | pin timm to the hard-checked set (0.9.10 in the image) |
 | bf16 fwd/bwd skipped in selftest | by design on ≤12 GB GPUs (`free < 20 GB` branch) |

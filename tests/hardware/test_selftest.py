@@ -26,12 +26,14 @@ import json
 import os
 import pathlib
 import subprocess
+import sys
 
 import pytest
 
 REPO = pathlib.Path(__file__).parents[2]
 IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10")
 IMAGE_ROCM = os.environ.get("ROBOVLA_IMAGE_ROCM", "robovla-runner-rocm:2026.10")
+DATASET = "s01/stop-at-target/v1"  # the deterministic selftest dataset
 MODEL_DIR = pathlib.Path(os.environ.get(
     "ROBOVLA_MODEL_DIR",
     "~/.cache/huggingface/hub")).expanduser()  # the HF hub-cache dir
@@ -54,8 +56,19 @@ def _spec(job_type: str) -> dict:
 
     return build_job_spec(
         job_id="j_20261021_0001", student="s00", job_type=job_type,
-        dataset="s01/stop-at-target/v1", node_id="pai1",
+        dataset=DATASET, node_id="pai1",
         node_agent="10.0.0.9:8601", budget_gb=18.0).to_dict()
+
+
+def _device_flags(image: str) -> list[str]:
+    """GPU passthrough per platform (matches the quadlet,
+    systemd/robovla-runner.service): NVIDIA = CDI (one-time root
+    ``nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml``); the ROCm
+    leg is plain device passthrough + unconfined seccomp."""
+    if "cuda" in image:
+        return ["--device", "nvidia.com/gpu=all"]
+    return ["--device", "/dev/kfd", "--device", "/dev/dri",
+            "--cap-add", "SYS_PTRACE", "--security-opt", "seccomp=unconfined"]
 
 
 def _run_job(image: str, spec: dict) -> subprocess.CompletedProcess:
@@ -66,14 +79,21 @@ def _run_job(image: str, spec: dict) -> subprocess.CompletedProcess:
     (job_dir / "spec.json").write_text(json.dumps(spec))
     argv = [
         "podman", "run", "--rm",
-        "--device", "/dev/kfd", "--device", "/dev/dri",
-        "--cap-add", "SYS_PTRACE", "--security-opt", "seccomp=unconfined",
+        # The image ENTRYPOINT is the agent (python -m agent, pinned by
+        # tests/integration/test_agent_entrypoint.py). podman appends the
+        # after-image argv to the ENTRYPOINT, so without this override the
+        # job's argv becomes the agent's args (agent boots, exits 1 on the
+        # missing ROBOVLA_AGENT_TOKEN — caught on host65, 2026-10-22).
+        # Override with the job's python; the fixed argv after the image
+        # name is then exec'd verbatim (the agent's exact fixed argv).
+        "--entrypoint", "/opt/venv/bin/python",
+        *_device_flags(image),
         "--volume", f"{WORK_DIR}:/data",
         "--volume", f"{MODEL_DIR}:/models:ro",
         "-e", "ROBOVLA_WORKDIR=/data",
         "-e", "ROBOVLA_MODEL_DIR=/models",
         "-e", "HF_HUB_CACHE=/models",
-        image, "/opt/venv/bin/python", "/opt/robovla/bin/robovla_job",
+        image, "/opt/robovla/bin/robovla_job",
         "--spec", f"/data/runs/{spec['job_id']}/spec.json",
     ]
     return subprocess.run(argv, capture_output=True, text=True)
@@ -85,9 +105,19 @@ def _prereqs(image: str, job_type: str) -> None:
                     f"Dockerfile.{ 'cuda' if 'cuda' in image else 'rocm' } .)")
     if not MODEL_DIR.is_dir():
         pytest.skip(f"model not downloaded to {MODEL_DIR} "
-                    "(robovla cli model_download)")
-    # selftests need no dataset pulled; a missing episodes/ is tolerated
-    # (predict/QLoRA sections skip, per the engine's contract)
+                    "(huggingface-cli download openvla/openvla-7b --cache-dir …)")
+    # selftest dataset: materialize the deterministic synthetic dataset in the
+    # job workdir (scripts/make_selftest_dataset.py — refuses to overwrite,
+    # so this is idempotent). Without it the engine skips the dataset-bound
+    # sections and the row passes VACUOUSLY (caught on host65, 2026-10-22:
+    # job exit 0 in ~15 s, no probe.json).
+    r = subprocess.run(
+        [sys.executable, str(REPO / "scripts" / "make_selftest_dataset.py"),
+         "--workdir", str(WORK_DIR), "--dataset", DATASET],
+        capture_output=True, text=True)
+    if r.returncode != 0:
+        pytest.skip(f"selftest dataset materialization failed: "
+                    f"{r.stdout + r.stderr}")
 
 
 def _assert_selftest_ok(spec: dict) -> None:
