@@ -23,10 +23,12 @@
 #
 # LAYER ORDERING (cache stability, 2026-10-22): the heavy dependency layers
 # (torch ~4 GB, the official TF stack ~1 GB, the pinned git fetches) come
-# BEFORE any repo source COPY, and the .dockerignore keeps this Dockerfile
-# out of the build context. Editing src/agent/images/scripts therefore
-# re-runs only the small source layers (seconds), not the dependency
-# layers (tens of minutes).
+# BEFORE the repo source COPYs, and the .dockerignore keeps this Dockerfile
+# out of the build context. The ONE source path the heavy layers depend on
+# is images/tfg_stub (the tfg stub install sits inside the TF stack layer) —
+# it is COPYed in its own tiny layer before them. Editing src/agent/images
+# therefore re-runs only the small source layers (seconds), not the
+# dependency layers (tens of minutes).
 #
 # The openvla CODE is CLONED at a pinned SHA and ALSO pip-installed
 # --no-deps (the official install is `pip install -e .`): the clone gives
@@ -62,12 +64,14 @@ RUN uv pip install \
         transformers==4.51.3 peft==0.14.0 bitsandbytes==0.50.2 \
         timm==0.9.10 pillow numpy pyyaml huggingface-hub
 
-# The console wheel (robovla + agent packages) + the images package
-# (job program / engine / crosscheck wrapper — not in the wheel).
+# The console wheel inputs + the tfg stub — BEFORE the heavy official
+# stack (layer ordering above). The wheel packages src/robovla + agent
+# only (pyproject [tool.hatch.build.targets.wheel]) — the images package
+# is NOT in the wheel, so this layer does not depend on it.
 COPY pyproject.toml README.md /opt/robovla/
 COPY src /opt/robovla/src
 COPY agent /opt/robovla/agent
-COPY images /opt/robovla/images
+COPY images/tfg_stub /opt/robovla/images/tfg_stub
 RUN uv pip install /opt/robovla
 
 # Pinned openvla code (Phase 1 SHA — the probe verified every touchpoint
@@ -138,6 +142,13 @@ RUN uv pip install --no-deps \
 # the only prismatic modules importing extra deps (jsonlines, rich) are
 # pretraining/download tooling the crosscheck path never imports.
 RUN uv pip install --no-deps /opt/openvla
+
+# The images package (job program / engine / crosscheck wrapper — NOT in
+# the wheel): AFTER the heavy layers, so a source edit under images/ re-runs
+# only this small COPY + the entrypoint layer (seconds). The tfg_stub files
+# were already COPYed before the TF stack layer (its install needs them);
+# this re-copies them identically.
+COPY images /opt/robovla/images
 
 # Fixed-argv entrypoints (python scripts — never a shell)
 COPY images/bin /opt/robovla/bin
