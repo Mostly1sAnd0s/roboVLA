@@ -159,7 +159,13 @@ def _fake_tfds(dp_failures=None):
 
     registry = _Registered()
 
-    class _GeneratorBasedBuilder:
+    # The ABCMeta metaclass is the REAL one (tfds's builders are ABC-based):
+    # type() with such a base creates the class inside the 'abc' module's
+    # frame, so __module__ comes out 'abc' unless pinned — the host65
+    # attempt-3 failure (epath.resource_path('abc') -> SpecPath).
+    import abc as _abc
+
+    class _GeneratorBasedBuilder(metaclass=_abc.ABCMeta):
         def __init_subclass__(cls, **kwargs):
             name = getattr(cls, "name", None)
             if registry._skipping or name is None:
@@ -274,6 +280,20 @@ def test_builder_class_creation_skips_registration():
     # nothing leaked into the registry: the official process must resolve
     # the dataset from files, never from a writer-side class
     assert "toto" not in reg.registry
+
+
+def test_builder_class_module_is_writer_module():
+    """host65 attempt 3 (2026-10-22): type() with the ABCMeta-based tfds
+    builder resolves the class inside the 'abc' module's frame, so
+    __module__ comes out 'abc' unless pinned. TFDS's
+    _get_builder_datadir_path() then does
+    epath.resource_path('abc').joinpath(*[]) — the stdlib 'abc' is a
+    single-file module, so etils returns an importlib.resources
+    SpecPath whose joinpath() requires an argument -> TypeError. Pin the
+    true module so tfds resolves the writer package's real directory."""
+    fake = _fake_tfds()
+    cls = rw.build_builder_class("toto", [_sample()], fake, features=None)
+    assert cls.__module__ == "images.rlds_writer"
 
 
 # -- the lazy boundary: the write path (fake stack, no real TF) ---------------

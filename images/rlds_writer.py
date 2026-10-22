@@ -207,6 +207,15 @@ def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
     instantiated (host65, first crosscheck attempt). The generator base
     implements both on top of ``_split_generators`` — the same base the
     official dlimp fork's MultiThreadedDatasetBuilder builds on.
+
+    ``__module__`` is pinned to this module (host65, third attempt):
+    ``type()`` with an ABCMeta-based base resolves the class inside the
+    ``abc`` module's frame, so the class comes out with
+    ``__module__ == 'abc'`` unless pinned — and TFDS's
+    ``_get_builder_datadir_path`` then chokes on the resulting single-file
+    stdlib module (``epath.resource_path('abc').joinpath(*[])`` — the
+    importlib.resources SpecPath its etils wrapper returns needs an
+    argument).
     """
 
     def _example(sample: dict[str, Any]) -> dict[str, Any]:
@@ -262,6 +271,17 @@ def build_builder_class(name: str, samples: Sequence[dict[str, Any]],
         # name derivation.
         return type(name[0].upper() + name[1:],
                     (tfds.core.GeneratorBasedBuilder,), {
+                        # type() with the ABCMeta-based tfds builder
+                        # resolves the class inside the 'abc' module's
+                        # frame, so __module__ comes out 'abc' unless
+                        # pinned. TFDS's _get_builder_datadir_path() then
+                        # does epath.resource_path('abc').joinpath(*[]) —
+                        # the stdlib 'abc' is a single-file module, so
+                        # etils returns an importlib.resources SpecPath
+                        # whose joinpath() requires an argument (TypeError;
+                        # host65 attempt 3). Pin the true module so tfds
+                        # resolves the writer package's real directory.
+                        "__module__": __name__,
                         "name": name,
                         "VERSION": tfds.core.Version(RLDS_VERSION),
                         "RELEASE_NOTES": {RLDS_VERSION:
