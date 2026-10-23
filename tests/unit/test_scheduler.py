@@ -366,3 +366,46 @@ class TestDurationDefaults:
     def test_unknown_type_rejected(self):
         with pytest.raises(RobovlaError):
             default_duration_s("retrain")
+
+
+class TestRestore:
+    """SPOF rehydration (design §10): the in-memory queue is rebuilt from
+    the durable rows at console boot and at every config reload — restored
+    jobs may be RUNNING or FINISHING (a crash or a mid-training node patch
+    must not drop the active job). ``restore`` is the rehydration seam;
+    ``add`` stays the new-job validator (queued only)."""
+
+    def _job(self, **over):
+        from robovla.core.scheduler import Job
+
+        base = dict(job_id="j_20261021_0001", student="s07", job_type="train",
+                    target_node=None, run_now=False, submitted_at=100.0,
+                    budget_gb=11.0, est_duration_s=3600.0)
+        base.update(over)
+        return Job(**base)
+
+    def test_add_rejects_non_queued(self):
+        s = Scheduler([_node()])
+        with pytest.raises(RobovlaError) as e:
+            s.add(self._job(state="running", node_id="nodeA"))
+        assert e.value.code == "conflict"
+
+    @pytest.mark.parametrize("state", ["queued", "running", "finishing"])
+    def test_restore_accepts_every_active_state(self, state):
+        s = Scheduler([_node()])
+        j = s.restore(self._job(state=state, node_id="nodeA"))
+        assert j.state == state
+        assert s.job(j.job_id).state == state
+
+    def test_restore_keeps_the_other_validations(self):
+        s = Scheduler([_node()])
+        with pytest.raises(RobovlaError) as e:
+            s.restore(self._job(budget_gb=0.0))
+        assert e.value.code == "validation"
+        s.restore(self._job())
+        with pytest.raises(RobovlaError) as e:
+            s.restore(self._job())  # duplicate id
+        assert e.value.code == "conflict"
+        with pytest.raises(RobovlaError) as e:
+            s.restore(self._job(job_id="j_20261021_0002", job_type="warp"))
+        assert e.value.code == "validation"

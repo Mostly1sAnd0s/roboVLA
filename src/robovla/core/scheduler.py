@@ -131,9 +131,10 @@ class Scheduler:
 
     # -- queue mutations --
 
-    def add(self, job: Job) -> Job:
+    def _check_job(self, job: Job, *, queued_only: bool) -> None:
+        """The shared job-shape validation (submit path and SPOF rehydration)."""
         if not isinstance(job, Job):
-            raise RobovlaError("validation", "add expects a Job")
+            raise RobovlaError("validation", "job must be a Job")
         if not job.job_id or not isinstance(job.job_id, str):
             raise RobovlaError("validation", "job_id must be a non-empty string")
         if job.job_id in self._jobs:
@@ -150,8 +151,23 @@ class Scheduler:
             raise RobovlaError("validation", "est_duration_s must be >= 0")
         if job.submitted_at < 0:
             raise RobovlaError("validation", "submitted_at must be >= 0")
-        if job.state != "queued":
+        if queued_only and job.state != "queued":
             raise RobovlaError("conflict", "new jobs must start queued")
+
+    def add(self, job: Job) -> Job:
+        """A NEW job (the submit path): it must start queued (§3)."""
+        self._check_job(job, queued_only=True)
+        self._jobs[job.job_id] = job
+        self._order.append(job.job_id)
+        return job
+
+    def restore(self, job: Job) -> Job:
+        """Rehydrate an EXISTING job from a durable row (SPOF rebuild /
+        config reload, §10): the same shape validation as :meth:`add`, minus
+        the new-job rule — a restored job may be running or finishing (a
+        console crash or a mid-training node patch must not drop the active
+        job; the agent keeps running it and the tick re-attaches)."""
+        self._check_job(job, queued_only=False)
         self._jobs[job.job_id] = job
         self._order.append(job.job_id)
         return job

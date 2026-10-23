@@ -124,7 +124,9 @@ class ConsoleService:
         s = Scheduler(self.fleet.nodes)
         for row in self.storage.list_jobs(state_in=("queued", "running", "finishing")):
             spec = row["spec"]
-            s.add(Job(
+            # SPOF rehydration: rows may be running/finishing — the submit-
+            # path's queued-only rule (Scheduler.add) must not apply.
+            s.restore(Job(
                 job_id=row["job_id"],
                 student=spec["student"],
                 job_type=spec["type"],
