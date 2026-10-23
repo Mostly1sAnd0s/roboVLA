@@ -162,12 +162,16 @@ def _assert_crosscheck_ok(spec: dict) -> None:
     """The file-contract manifest from the official run: adapter (LoRA) +
     merged model (bf16 full weights) under the job dir, with the official
     dataset_statistics.json (the official predict path needs it next to the
-    merged model to de-normalize actions)."""
-    job_dir = WORK_DIR / "runs" / spec["job_id"]
+    merged model to de-normalize actions). The manifest paths are
+    WORKDIR-RELATIVE (images/contract.py — the console/agent re-resolves
+    them there); the dirs themselves live under the job dir."""
+    job_dir = (WORK_DIR / "runs" / spec["job_id"]).resolve()
     art = json.loads((job_dir / "artifacts.json").read_text())
     assert [a["kind"] for a in art] == ["adapter", "merged"]
-    adapter = (job_dir / art[0]["path"]).resolve()
-    merged = (job_dir / art[1]["path"]).resolve()
+    adapter = (WORK_DIR / art[0]["path"]).resolve()
+    merged = (WORK_DIR / art[1]["path"]).resolve()
+    assert adapter.is_relative_to(job_dir)
+    assert merged.is_relative_to(job_dir)
     assert (adapter / "adapter_model.safetensors").is_file()
     assert (merged / "dataset_statistics.json").is_file()
     assert any(f.suffix in (".bin", ".safetensors")
@@ -181,9 +185,10 @@ def test_crosscheck_cuda():
     the wrapper materializes the subset as an RLDS/TFDS dataset and runs
     the pinned vla-scripts/finetune.py (torchrun nproc 1, official 4-bit,
     WANDB_MODE=disabled). LONG row: 1000 frames // (batch 1 x grad_accum 8)
-    = 125 steps/epoch x 3 epochs — on a 12 GB node run it detached (setsid
-    nohup + poll the job log) and expect ~2-4 h; the 32 GB fleet nodes at
-    batch 4-8 are 4-8x faster."""
+    = 125 steps/epoch x 3 epochs = 375 optimizer steps — on a 12 GB node
+    run it detached (setsid nohup + poll the job log); measured ~27 min
+    end-to-end at batch 1 (host65 attempt 7, 2026-10-22); the 32 GB fleet
+    nodes at batch 4-8 are 4-8x faster."""
     from robovla.core.spec import build_job_spec
 
     _prereqs_image(IMAGE_CUDA)
@@ -195,5 +200,11 @@ def test_crosscheck_cuda():
         dataset=CROSSCHECK_DATASET, node_id="pai1",
         node_agent="10.0.0.9:8601", budget_gb=18.0, batch=1).to_dict()
     cp = _run_job(IMAGE_CUDA, spec, program="finetune")
+    # This agentless row CAPTURES the official's live output (the loss
+    # curve, per-step time, VRAM) — on a green run nothing else carries
+    # it, so persist it next to the run artifacts (the hardware log
+    # source; host65 attempt 7 lost the curve this way).
+    (WORK_DIR / "runs" / spec["job_id"] / "official_output.log").write_text(
+        cp.stdout + cp.stderr)
     assert cp.returncode == 0, cp.stdout + cp.stderr
     _assert_crosscheck_ok(spec)

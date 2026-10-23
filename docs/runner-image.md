@@ -190,6 +190,116 @@ batch 1, tight as the selftest predicts). pai1 is **reserved for LLM
 development** (the assistant that drives development runs on it) and gets
 no openvla work.
 
+## Crosscheck on the scratch box — the official engine end-to-end (2026-10-22)
+
+The 50-episode crosscheck — the console engine vs the **official**
+`openvla` `finetune.py` on identical data (design §6; the student curve
+comparison) — is green on host65/4070 (`j_20261022_0002`,
+`tests/hardware/test_selftest.py::test_crosscheck_cuda`, batch 1).
+
+**Image tag:** `robovla-runner-cuda:2026.10.1` (the `.10` tag has no
+official stack). Pin rule: after any image rebuild, re-run
+`test_gpu_selftest_cuda` before trusting the tag. Rebuilds are ~2 min
+(heavy stack layers are decoupled from the `images/` source COPY).
+
+**The official stack (why each pin/flag):**
+
+| Piece | Pin / flag | Why |
+|---|---|---|
+| draccus / accelerate / wandb | 0.8.0 / 1.15.0 / 0.31.0 | the official repo's own pins (`finetune.py`'s config layer, the DDP `PartialState`, its logging) |
+| tensorflow / tensorflow_datasets | 2.19.1 / 4.9.3 | TFDS is the official pin; the official TF 2.15 predates py3.12 (cp312 wheels start at 2.17) and the image is 3.12 |
+| tensorflow_metadata | 1.17.3 | tfds's floating dep; the latest (1.21.0) ships pb2 gencode built with protobuf 6.x, which fails the runtime-version check (TF 2.19.1 forces protobuf<6) |
+| tensorflow_graphics | **stub** (`images/tfg_stub`) | the official pin (2021.12.3) needs tf-addons — cp39–cp311 wheels only, unresolvable on py3.12. The pinned openvla imports it at module level but only DROID/furniture-bench/iamlab/cmu transforms use it; the crosscheck path (`toto`, a pure `tf.concat`) never does. The stub satisfies the import and every leaf raises a clear RuntimeError |
+| dlimp (official fork) | `--no-deps` @ 040105d | its setup.py hard-pins TF 2.15 (would downgrade the image's 2.19.1); its runtime import surface is {tensorflow, tensorflow_datasets, numpy} — all present |
+| openvla + prismatic | `--no-deps` @ c8f03f48 | the official pyproject pins torch 2.2.0 / transformers 4.40.1 / peft 0.11.1 / TF 2.15 — following them re-opens the Phase 1 pins; the finetune import chain's surface is all present |
+| `finetune.py` build-time patch | `images/finetune_patch.diff`, sha256-pinned (`a5600f58…`) | the #90 workaround — below |
+
+**The #90 workaround (disclosed, build-time):** the pinned script cannot
+complete ONE QLoRA step on this stack — its hardcoded DDP wrap (no
+`static_graph`) + the gradient checkpointing that
+`prepare_model_for_kbit_training` enables meet torch 2.9.0's implicit
+**non-reentrant** checkpoint default and the first backward dies
+(`RuntimeError: Expected to mark a variable ready only once`;
+openvla/openvla#90 — a maintainer-acknowledged latent bug; no argv/env
+reaches the DDP args). The Dockerfile applies the exact #90 fix at build
+time (`git apply --check` against the SHA checkout, then the patched file
+is sha256-pinned): `static_graph=True` + explicitly **reentrant**
+checkpointing — mathematically neutral. Crosscheck results carry this
+note (the wrapper docstring discloses it too).
+
+**The RLDS materialization (`images/rlds_writer.py`):** the subset → one
+TFDS example per trajectory under `<job_dir>/crosscheck_rlds/toto/` (the
+OXE `toto` config — the only pure-concat standardization, so the course
+action convention `(vx, vy, wz, 0, 0, 0, 0.0)` flows through verbatim;
+the zero-padded dims are "unused" in the official BOUNDS_Q99
+normalization and the gripper dim is excluded by the EEF_POS mask).
+Fixes found host65-side (attempts 1–5, all CPU-pinned in
+`tests/unit/test_rlds_writer.py`): subclass `tfds.core.GeneratorBasedBuilder`
+(a raw `Builder` needs a filesystem dataset), `skip_registration` on the
+dynamically-created builder class, pin its `__module__` (TFDS re-imports
+via `__import__` of `__module__` — an un-pinned dynamic class comes out
+as `'abc'`), yield **(key, example)** pairs (the TFDS 4.x contract —
+shard assignment hashes the key), and `open_gripper` is a per-frame
+**scalar** (the official transform does `tf.concat([wv, rd,
+open_gripper[:, None]])` — it re-adds the axis itself). The wrapper also
+forwards the official's captured stdout/stderr into its own streams
+(host65 attempt 5: the swallowed child output hid the real failure
+behind a bare exit code).
+
+**Known degradations (documented in the results):**
+- TFDS 4.9.3 rejects the deliberately empty `val` split ("No examples
+  were yielded") — the writer's primary (train + empty val, which would
+  let the official use 100% of the subset) always falls back to
+  train-only, and the official then trains `train[:95%]`: **47/50
+  episodes** (the last 3 of the subset, deterministically held out).
+  `dataset_statistics.json` is computed on all 50 (1000 transitions).
+- The pinned `finetune.py` logs loss **only via `wandb.log`** (smoothed
+  `train_loss` / `l1_loss` per step); the wrapper execs with
+  `WANDB_MODE=disabled` (no credentials on the LAN) — the job log
+  carries the official's live progress (tqdm, checkpoint events) and the
+  wrapper's manifest line, but not per-step loss values. A wandb
+  **offline** sink (credential-free; parse the offline run back into
+  `crosscheck_loss.jsonl`) is the follow-up for the student curve
+  comparison.
+
+**Silicon result (2026-10-22, host65/RTX 4070 12 GB, batch 1):**
+
+| Metric | Value |
+|---|---|
+| total wall (row: podman + RLDS + load + train + checkpoint + CPU merge) | 1644.8 s (27:24) |
+| training loop | 375 steps (125/epoch × 3) at 4.24 s/step (tqdm 26:32) |
+| VRAM (nvidia-smi, stable) | 8971 MiB (73% of 12288) |
+| LoRA footprint | 110,828,288 / 7,652,065,472 trainable (1.4483%); r32, α16 (the official's hardcoded `min(rank, 16)`), bias none |
+| artifacts (file contract, workdir-relative) | adapter dir 968,788,735 B (`adapter_model.safetensors` 968,782,584 B); merged 15,086,381,550 B (4 safetensors shards + tokenizer/config + `dataset_statistics.json`) |
+| exp_id | `openvla-7b+toto+b8+lr-0.0005+lora-r32+dropout-0.0+q-4bit--j_20261022_0002--image_aug` |
+| loss curve | not in the job log (wandb-only sink — degradations above) |
+
+**Official-vs-recipe deltas** (the comparison is shape/convergence, not
+point-for-point):
+
+| Axis | Official (crosscheck) | Console recipe |
+|---|---|---|
+| quant | 4-bit only (`use_quantization` → nf4) | 8-bit (bnb8) |
+| LoRA α | 16 (hardcoded `min(rank, 16)`) | 32 |
+| data order | unseeded TF shuffle | seeded split, in order |
+| eff-batch | 8 (batch 1 × grad_accum 8) | 8 (same) |
+| loss visibility | wandb-only | per-step `metrics.jsonl` |
+
+**Ops (this row):** LONG (27 min on the 4070 — run it detached:
+`setsid nohup` + poll). The pytest log only grows when the podman process
+exits (capture_output) — a ~272 B log mid-run is NORMAL, not a hang;
+`pgrep -f test_crosscheck` self-matches its own command line — confirm
+liveness via nvidia-smi (idle = 27 MiB) + the log. Re-kick:
+`rm -rf <job_dir>/{crosscheck_rlds,crosscheck_out}` first (TFDS reuses an
+existing `toto/1.0.0` — stale data would poison the run), then
+`GPU_TESTS=1 ROBOVLA_IMAGE_CUDA=robovla-runner-cuda:2026.10.1
+ROBOVLA_WORK_DIR=… ROBOVLA_MODEL_DIR=… setsid nohup .venv/bin/python -m
+pytest tests/hardware/test_selftest.py::test_crosscheck_cuda -m hardware
+-v -rs > /tmp/…log 2>&1 &`. The row persists the official's captured
+output to `<job_dir>/official_output.log` (the agentless row captures
+what the agent's job log would carry; on failure the `[rank0]` traceback
+is in the same log — the forwarding fix works).
+
 ## AMD / ROCm (home Strix Halo 8060S, gfx1151)
 
 **Status: designed, not yet verified** — the home lab is off-campus
