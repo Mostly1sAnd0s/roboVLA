@@ -108,9 +108,13 @@ GPU_TESTS=1 uv run pytest -m hardware    # in-image job rows (podman run, fixed 
 
 ### Scratch-box variant — no root at all (host65, built 2026-10-22)
 
-host65 (avc) has a locked root account and a Mint-restricted sudoers allowlist,
-so the user-local variant is staged there (works for everything *except* the
-setuid step — see the uidmap note above):
+host65 (avc) had a locked root account and a Mint-restricted sudoers
+allowlist (2026-10-22); the node user gained password sudo by 2026-10-26
+(used for the setuid step, the CDI spec regen, and the `rpm2cpio`/`cpio`/
+`zstd` extraction tools). The user-local variant is staged there anyway
+(no distro podman usable — see the 2026-10-26 recovery note below), so
+it works for everything *except* the setuid step (see the uidmap note
+above):
 
 1. **podman 5.8.5 + friends from CentOS Stream 9 rpms** (glibc 2.34 ≤ jammy's
    2.35): `podman buildah conmon crun netavark slirp4netns fuse-overlayfs`
@@ -119,8 +123,16 @@ setuid step — see the uidmap note above):
    `mirror.stream.centos.org/9-stream/…/Packages/`. Extract with
    `python -m rpmfile` (+ `zstandard`); the shared libs are
    `*.so.N.M.K` with the versioned symlink (17-byte members are symlinks).
-   Binaries → `~/robovla-p1/tools/bin`, libs → same dir,
-   `export LD_LIBRARY_PATH=~/robovla-p1/tools/bin PATH=…:$PATH`.
+   Binaries → `~/robovla-tools/bin`, libs → same dir,
+   `export LD_LIBRARY_PATH=~/robovla-tools/bin PATH=…:$PATH`.
+   (2026-10-26: the original `~/robovla-p1/tools` was destroyed by a bad
+   `rsync --delete` from pai1; the same rpm set was re-extracted to
+   `~/robovla-tools/`. Two rpm flavors: the zstd-payload rpms (netavark,
+   podman-catatonit, shadow-utils*, libxcrypt) need
+   `rpm2cpio f.rpm | zstd -d | cpio -idm` — plain `rpm2cpio | cpio` fails
+   silently on them. netavark/catatonit land under `usr/libexec/podman/`
+   in the rpms — collect them into `bin/`; podman 5.x resolves them via
+   the `helper_binaries_dir` config key, not PATH.)
 2. **conmon path** (no `/usr/libexec/podman` to write): user config
    `~/.config/containers/containers.conf`:
    `[engine]` → `conmon_path = ['…/tools/bin/conmon']` (an **array**).
@@ -181,6 +193,34 @@ ENTRYPOINT (agent boots instead of the job — now `--entrypoint
 exit 0 vacuously (now materialized via
 `scripts/make_selftest_dataset.py` in `_prereqs`).
 
+**Recovered + re-verified 2026-10-26 (stack moved to `~/robovla-tools/`):**
+a bad `rsync --delete` from pai1 (multiple source dirs + `--delete` sweeps
+the WHOLE destination, not just the named dirs) destroyed the original
+`~/robovla-p1` tree (the `tools/` rpm set, the venv, the tree copy —
+images/store/model cache/workdir outside it survived). Recovery:
+- the same CS9 rpm set re-extracted to `~/robovla-tools/` (podman 5.8.5-2,
+  buildah 1.43.2-3, conmon 2.2.1-2, crun 1.29.1, netavark 1.17.2-3,
+  slirp4netns 1.3.4, fuse-overlayfs 1.17, libslirp, libxcrypt,
+  shadow-utils/subid + the NVIDIA toolkit 1.20.1; zstd-payload rpm
+  handling + `libexec/podman/` collection — see step 1).
+- Mint's apt `podman` is **3.4.4 — no CDI** (the pinned rows use
+  `--device nvidia.com/gpu=all`, a podman ≥4.0 surface) — rejected and
+  purged. Its leftover `/usr/bin/crun` (0.17) then failed the runs with
+  `crun: unknown version specified`: **podman resolves the runtime from a
+  fixed path list (`/usr/bin` first), not PATH** — purged the leftover and
+  symlinked the user-local `crun`/`slirp4netns`/`fuse-overlayfs` into
+  `/usr/local/bin` (the next fixed-list slot).
+- the repo is now a **git clone at `~/robovla`** (sync = `git pull` — no
+  more tree copies); the hardware-row venv = `uv venv --python 3.12` +
+  `uv pip install . pytest` (uv's managed CPython 3.12, `~/.local/bin/uv`).
+- the CDI spec regenerated with root (`/etc/cdi/nvidia.yaml` +
+  `~/.config/cdi/`; hook = `~/robovla-tools/bin/nvidia-cdi-hook` — the old
+  spec pointed at the destroyed `tools/` dir).
+- re-verified end-to-end: `podman run --device nvidia.com/gpu=all` in the
+  image (`torch.cuda.is_available()` True, the 4070), `test_gpu_selftest_cuda`
+  on `2026.10.2` (34.9 s warm), and the LONG `test_crosscheck_cuda` green
+  (27:25 — the wandb sink's `metrics.jsonl` rows asserted, below).
+
 **Role of this box (2026-10-22):** until node2 (campus 5090 Ti) is online,
 host65 is the **development/test box**: crosscheck wrapper development and
 verification, the hardware rows, and any container/GPU work happen here —
@@ -190,18 +230,22 @@ batch 1, tight as the selftest predicts). pai1 is **reserved for LLM
 development** (the assistant that drives development runs on it) and gets
 no openvla work.
 
-## Crosscheck on the scratch box — the official engine end-to-end (2026-10-22)
+## Crosscheck on the scratch box — the official engine end-to-end (2026-10-22; re-verified on 2026-10-26 with the wandb sink)
 
 The 50-episode crosscheck — the console engine vs the **official**
 `openvla` `finetune.py` on identical data (design §6; the student curve
 comparison) — is green on host65/4070 (`j_20261022_0002`,
-`tests/hardware/test_selftest.py::test_crosscheck_cuda`, batch 1).
+`tests/hardware/test_selftest.py::test_crosscheck_cuda`, batch 1); the
+row was re-run 2026-10-26 on `robovla-runner-cuda:2026.10.2` after the
+wandb sink landed (the row now asserts the sink's `metrics.jsonl` — the
+result table below carries the re-run).
 
 **Image tag:** `robovla-runner-cuda:2026.10.2` (the wandb sink — below;
 `2026.10.1` predates it, the `.10` tag has no official stack). Pin rule:
 after any image rebuild, re-run `test_gpu_selftest_cuda` before trusting
 the tag. Rebuilds are ~2 min (heavy stack layers are decoupled from the
-`images/` source COPY).
+`images/` source COPY). Rebuild + selftest re-run done 2026-10-26
+(selftest 34.9 s warm on the 4070) — tag trusted, crosscheck re-run green.
 
 **The official stack (why each pin/flag):**
 
@@ -274,6 +318,12 @@ crosscheck visibly, not silently. CPU-pinned in
 no-op default, the fail-loud edges, name independence of the aliased
 file, and the Dockerfile-dest ↔ wrapper-`SINK_DIR` agreement); the
 hardware row now asserts the sink's rows (`_assert_crosscheck_ok`).
+**Re-verified on silicon 2026-10-26 (host65/4070):** the crosscheck row
+green on `2026.10.2` — 304 sink rows asserted (int step, finite loss,
+monotone steps, `action_accuracy`/`l1_loss` passthrough; loss 9.63 →
+1.11) and the sink's one `init` job-log line captured in
+`official_output.log` (`[wandb-sink] init: entity=local,
+project=robovla-crosscheck, … (sink: /data/runs/j_20261022_0002/metrics.jsonl)`).
 Disclosed in the results like the #90 patch: the official's own process
 is otherwise untouched — the sink is a logging stand-in.
 
@@ -289,17 +339,19 @@ is otherwise untouched — the sink is a logging stand-in.
   own cadence — not per micro-batch); `action_accuracy` is TRAIN accuracy
   (the held-out comparison stays the console side's `val.json`).
 
-**Silicon result (2026-10-22, host65/RTX 4070 12 GB, batch 1):**
+**Silicon result (host65/RTX 4070 12 GB, batch 1 — the 2026-10-26 re-run
+on `2026.10.2`; the original 2026-10-22 run on `2026.10.1` is identical
+within noise):**
 
 | Metric | Value |
 |---|---|
-| total wall (row: podman + RLDS + load + train + checkpoint + CPU merge) | 1644.8 s (27:24) |
-| training loop | 375 steps (125/epoch × 3) at 4.24 s/step (tqdm 26:32) |
-| VRAM (nvidia-smi, stable) | 8971 MiB (73% of 12288) |
+| total wall (row: podman + RLDS + load + train + checkpoint + CPU merge) | 1645.4 s (27:25; 2026-10-22: 1644.8 s / 27:24) |
+| training loop | 375 steps (125/epoch × 3) at 4.25 s/step (tqdm 26:32; 2026-10-22: 4.24 s/step) |
+| VRAM (nvidia-smi, stable) | 8971 MiB (73% of 12288) — both runs |
 | LoRA footprint | 110,828,288 / 7,652,065,472 trainable (1.4483%); r32, α16 (the official's hardcoded `min(rank, 16)`), bias none |
-| artifacts (file contract, workdir-relative) | adapter dir 968,788,735 B (`adapter_model.safetensors` 968,782,584 B); merged 15,086,381,550 B (4 safetensors shards + tokenizer/config + `dataset_statistics.json`) |
-| exp_id | `openvla-7b+toto+b8+lr-0.0005+lora-r32+dropout-0.0+q-4bit--j_20261022_0002--image_aug` |
-| loss curve | not captured (this run used `2026.10.1`, which predates the wandb sink — the next crosscheck re-run carries it via `metrics.jsonl`; the hardware row asserts it) |
+| artifacts (file contract, workdir-relative) | adapter dir 968,788,735 B (`adapter_model.safetensors` 968,782,584 B); merged 15,086,381,550 B (4 safetensors shards + tokenizer/config + `dataset_statistics.json`) — **bit-identical across both runs** (deterministic subset + config) |
+| exp_id | `openvla-7b+toto+b8+lr-0.0005+lora-r32+dropout-0.0+q-4bit--j_20261022_0002--image_aug` — identical across both runs |
+| loss curve | **captured via the wandb sink (2026-10-26 re-run; the 2026-10-22 run used `2026.10.1` and lost it)** — 304 rows in the job's `metrics.jsonl`, steps 0..370 (total 375): `loss` 9.63 → 1.11 (min 0.97), `action_accuracy` 0.14 → 0.75, `l1_loss` 0.56 → 0.19; the hardware row asserts these (int step, finite loss, monotone steps, passthrough keys) |
 
 **Official-vs-recipe deltas** (the comparison is shape/convergence, not
 point-for-point):
