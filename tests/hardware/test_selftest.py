@@ -34,7 +34,7 @@ import sys
 import pytest
 
 REPO = pathlib.Path(__file__).parents[2]
-IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10.1")
+IMAGE_CUDA = os.environ.get("ROBOVLA_IMAGE_CUDA", "robovla-runner-cuda:2026.10.2")
 IMAGE_ROCM = os.environ.get("ROBOVLA_IMAGE_ROCM", "robovla-runner-rocm:2026.10")
 DATASET = "s01/stop-at-target/v1"  # the deterministic selftest dataset
 CROSSCHECK_DATASET = "s01/crosscheck-50/v1"  # the crosscheck row's 50-ep dataset

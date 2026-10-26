@@ -221,6 +221,26 @@ images/store/model cache/workdir outside it survived). Recovery:
   on `2026.10.2` (34.9 s warm), and the LONG `test_crosscheck_cuda` green
   (27:25 — the wandb sink's `metrics.jsonl` rows asserted, below).
 
+**Disk cleanup 2026-10-26 (post-recovery):** the disk had grown to 87 %
+(23 GB free): the podman image store was 78.8 GB (the current `2026.10.2`
++ the stale `2026.10.1`/`2026.10` tags + five dangling `<none>` rebuild
+intermediates) on top of the 15 GB merged crosscheck artifact
+(`~/robovla-selftest/runs/j_20261022_0002` — **kept**, the documented
+artifact). Actions: `podman image prune -f` (the dangling intermediates);
+`podman rmi localhost/robovla-runner-cuda:2026.10` (the pre-official-stack
+era — superseded twice) and `:2026.10.1` (its reference role is done — the
+`2026.10.2` run's bit-identical comparison closed `9841838`, the artifacts
+stay on disk, and the tag is rebuildable from the pinned Dockerfile);
+`rm -rf ~/robovla-p1` (the gutted pre-git tree — 91 MB of a partial copy
+left by the bad rsync; no `.git`, no live config references — verified
+before deleting). Result: disk 57 % used (**76 GB free**), image store
+23.6 GB (`2026.10.2` + the base images only). The hardware row's default
+tag now points at `2026.10.2` (`tests/hardware/test_selftest.py` — the
+store no longer holds `2026.10.1`; the Ops recipe below always passes the
+tag explicitly anyway). Pre-git leftovers still in `~`
+(`robovla-sync.tar`, the 2026-10-21 probe scripts + the `.robovla-p1-token`
+file) are unreferenced and left for the owner to remove.
+
 **Role of this box (2026-10-22):** until node2 (campus 5090 Ti) is online,
 host65 is the **development/test box**: crosscheck wrapper development and
 verification, the hardware rows, and any container/GPU work happen here —
