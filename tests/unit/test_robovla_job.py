@@ -17,6 +17,7 @@ fixture implements): metrics.jsonl rows, val.json, probe.json, artifacts.json
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -241,8 +242,9 @@ def test_crosscheck_argv_and_materialized_subset(tmp_path):
     spec = _spec("crosscheck", seed=7)
     ds = _real_dataset(tmp_path, episodes=60)
     job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
+    from images import wandb_sink as ws
     writer, calls = _fake_rlds_writer()
-    argv, dirs = xf.translate(spec, ds, job_dir, writer=writer)
+    argv, dirs, env = xf.translate(spec, ds, job_dir, writer=writer)
 
     # the official script, pinned in the image, single-GPU torchrun launch
     assert argv[0].endswith("torchrun")
@@ -269,6 +271,14 @@ def test_crosscheck_argv_and_materialized_subset(tmp_path):
     assert d["--max_steps"] == "54"
     assert d["--save_steps"] == "54"  # one final checkpoint (+ LoRA merge)
 
+    # the wandb sink env: the official's per-10-step loss lands in the job's
+    # standard metrics.jsonl (the agent poll / SSE / sparkline consume it —
+    # one metrics channel, no second curve format)
+    assert env[ws.ENV_SINK] == str(job_dir / "metrics.jsonl")
+    assert env[ws.ENV_TOTAL] == d["--max_steps"]
+    assert env[ws.ENV_LR] == d["--learning_rate"]
+    assert env["PYTHONPATH"] == xf.SINK_DIR
+
     # the deterministic subset, materialized through the writer seam
     assert len(calls) == 1
     c = calls[0]
@@ -288,7 +298,8 @@ def test_crosscheck_bf16_runs_official_unquantized(tmp_path):
     spec = _spec("crosscheck", quant="bf16")
     ds = _real_dataset(tmp_path)
     job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
-    argv, _dirs = xf.translate(spec, ds, job_dir, writer=_fake_rlds_writer()[0])
+    argv, _dirs, _env = xf.translate(
+        spec, ds, job_dir, writer=_fake_rlds_writer()[0])
     # bf16 has no bnb on the rocm leg: the official side runs unquantized
     assert _flags(argv)["--use_quantization"] == "false"
 
@@ -298,16 +309,17 @@ def test_crosscheck_smaller_dataset_uses_all(tmp_path):
     ds = _real_dataset(tmp_path, episodes=30)
     job_dir = tmp_path / "wd" / "runs" / spec["job_id"]
     writer, calls = _fake_rlds_writer()
-    argv, _dirs = xf.translate(spec, ds, job_dir, writer=writer)
+    argv, _dirs, _env = xf.translate(spec, ds, job_dir, writer=writer)
     assert len(calls[0]["samples"]) == 30  # fewer than 50 -> the whole dataset
     assert _flags(argv)["--max_steps"] == "33"  # 90 frames // 8 = 11/epoch x 3
 
 
 def test_crosscheck_main_cpu_contract(tmp_path, monkeypatch):
     """main() on CPU with both seams faked: the shared validator + fixed argv
-    + the env merge (WANDB_MODE=disabled over the inherited env, not a
-    replacement) + the artifacts contract on exit 0; a nonzero official exit
-    skips the manifest and propagates the code."""
+    + the env merge (the wandb sink env over the inherited env, not a
+    replacement — the official's wandb stream lands in the job's
+    metrics.jsonl) + the artifacts contract on exit 0; a nonzero official
+    exit skips the manifest and propagates the code."""
     from subprocess import CompletedProcess
 
     from images import rlds_writer as rw
@@ -334,8 +346,12 @@ def test_crosscheck_main_cpu_contract(tmp_path, monkeypatch):
     (p.parent / "crosscheck_out" / "adapter-tmp" / exp).mkdir(parents=True)
 
     assert xf.main(["--spec", str(p)]) == 0
-    assert seen["env"]["WANDB_MODE"] == "disabled"
     assert "PATH" in seen["env"]  # merged, not a bare replacement
+    # the sink env (the official's loss stream -> the job's metrics.jsonl)
+    assert seen["env"]["ROBOVLA_METRICS_SINK"] == \
+        str(p.parent.resolve() / "metrics.jsonl")
+    assert seen["env"]["ROBOVLA_METRICS_LR"] == str(o["lr"])
+    assert xf.SINK_DIR in seen["env"]["PYTHONPATH"].split(os.pathsep)
     art = json.loads((p.parent / "artifacts.json").read_text())
     assert [a["kind"] for a in art] == ["adapter", "merged"]
 

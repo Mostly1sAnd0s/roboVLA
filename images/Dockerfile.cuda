@@ -38,7 +38,9 @@
 # (images/vla_compat.py) + pure token math (images/engine.py).
 #
 # Build (from the repo root):
-#   podman build -t robovla-runner-cuda:2026.10.1 -f images/Dockerfile.cuda .
+#   podman build -t robovla-runner-cuda:2026.10.2 -f images/Dockerfile.cuda .
+# (2026.10.2 = the wandb sink; pin rule: re-run test_gpu_selftest_cuda after
+# any rebuild before trusting the tag — docs/runner-image.md)
 
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
@@ -101,8 +103,9 @@ RUN git -C /opt/openvla apply --check /tmp/finetune_patch.diff \
 
 # The official fine-tune stack (crosscheck, §6): vla-scripts/finetune.py at
 # the pinned SHA needs its own dependencies — draccus (its config layer),
-# accelerate (the DDP PartialState), wandb (its logging; the wrapper execs it
-# with WANDB_MODE=disabled — no credentials on the LAN), and the RLDS/TFDS
+# accelerate (the DDP PartialState), wandb (its logging — the crosscheck
+# child SHADOWS it with the house sink, see the COPY below; the package
+# stays for import-chain completeness), and the RLDS/TFDS
 # data pipeline (tensorflow + tensorflow_datasets + the official dlimp fork,
 # a git dep pinned at its 2024-07 commit). Pins: draccus / TFDS are the
 # official repo's pins; tensorflow is 2.19.1 because the official 2.15
@@ -166,6 +169,16 @@ RUN uv pip install --no-deps /opt/openvla
 # were already COPYed before the TF stack layer (its install needs them);
 # this re-copies them identically.
 COPY images /opt/robovla/images
+
+# The crosscheck wandb sink (images/wandb_sink.py ships under its ALIASED
+# name): the crosscheck wrapper puts this dir FIRST on the official child's
+# PYTHONPATH, so the script's `import wandb` resolves to the house sink
+# (stdlib-only; the official's per-10-step loss stream lands in the job's
+# standard metrics.jsonl — the agent poll / SSE / sparkline consume it) and
+# never to the pip-installed package (stays installed for import-chain
+# completeness; the sink's unknown attributes fail loud — a re-pinned
+# script with a larger wandb surface fails the crosscheck visibly).
+COPY images/wandb_sink.py /opt/robovla/sink/wandb.py
 
 # Fixed-argv entrypoints (python scripts — never a shell)
 COPY images/bin /opt/robovla/bin

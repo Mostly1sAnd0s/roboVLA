@@ -25,6 +25,7 @@ engine loads the base model offline from the mounted volume.
 from __future__ import annotations
 
 import json
+import math
 import os
 import pathlib
 import subprocess
@@ -164,7 +165,10 @@ def _assert_crosscheck_ok(spec: dict) -> None:
     dataset_statistics.json (the official predict path needs it next to the
     merged model to de-normalize actions). The manifest paths are
     WORKDIR-RELATIVE (images/contract.py — the console/agent re-resolves
-    them there); the dirs themselves live under the job dir."""
+    them there); the dirs themselves live under the job dir. Plus the wandb
+    sink's output: the official's per-10-step loss stream in the job's
+    standard metrics.jsonl (the run-detail sparkline's source; 375 steps at
+    the row's config -> a row every 10 gradient steps)."""
     job_dir = (WORK_DIR / "runs" / spec["job_id"]).resolve()
     art = json.loads((job_dir / "artifacts.json").read_text())
     assert [a["kind"] for a in art] == ["adapter", "merged"]
@@ -176,6 +180,21 @@ def _assert_crosscheck_ok(spec: dict) -> None:
     assert (merged / "dataset_statistics.json").is_file()
     assert any(f.suffix in (".bin", ".safetensors")
                for f in merged.iterdir() if f.is_file())
+    # the wandb sink: every line a house metrics row (int step, finite loss,
+    # monotone steps — the official logs gradient_step_idx in ascending
+    # order) and the passthrough keys survived the mapping
+    mpath = job_dir / "metrics.jsonl"
+    assert mpath.is_file(), "the wandb sink wrote no metrics rows"
+    rows = [json.loads(line) for line in mpath.read_text().splitlines()
+            if line.strip()]
+    assert rows, "the wandb sink wrote no metrics rows"
+    for i, row in enumerate(rows):
+        assert isinstance(row["step"], int)
+        assert isinstance(row["loss"], float) and math.isfinite(row["loss"])
+        assert set(row) >= {"step", "total", "loss", "lr"}
+        if i:
+            assert row["step"] >= rows[i - 1]["step"]
+    assert all("action_accuracy" in row for row in rows)
 
 
 @needs_gpu
@@ -184,7 +203,8 @@ def test_crosscheck_cuda():
     crosscheck rework, 2026-10-22 — gate M5's "real training verified"):
     the wrapper materializes the subset as an RLDS/TFDS dataset and runs
     the pinned vla-scripts/finetune.py (torchrun nproc 1, official 4-bit,
-    WANDB_MODE=disabled). LONG row: 1000 frames // (batch 1 x grad_accum 8)
+    the wandb sink capturing the official's per-10-step loss into the
+    job's metrics.jsonl). LONG row: 1000 frames // (batch 1 x grad_accum 8)
     = 125 steps/epoch x 3 epochs = 375 optimizer steps — on a 12 GB node
     run it detached (setsid nohup + poll the job log); measured ~27 min
     end-to-end at batch 1 (host65 attempt 7, 2026-10-22); the 32 GB fleet

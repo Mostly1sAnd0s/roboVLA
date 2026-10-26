@@ -12,9 +12,12 @@ subset as an official RLDS/TFDS dataset under the job dir
 execs the official script with a FIXED argv through the house proc seam
 (no shell, ever). The official script's captured stdout/stderr are
 forwarded to the wrapper's own streams (the proc seam captures the child's
-output, host65 attempt 5), so the agent's job log carries them. On a clean
-exit it writes the file-contract artifact manifest (adapter + merged
-model) for the console.
+output, host65 attempt 5), so the agent's job log carries them. The
+official's wandb stream is captured by the house sink (below): the wrapper
+shadows the real wandb package on the child's PYTHONPATH and the official
+log payload lands in the job's standard metrics.jsonl. On a clean exit it
+writes the file-contract artifact manifest (adapter + merged model) for
+the console.
 
 Official-vs-recipe notes (pinned openvla SHA c8f03f48, read 2026-10-22):
 
@@ -41,9 +44,19 @@ Official-vs-recipe notes (pinned openvla SHA c8f03f48, read 2026-10-22):
   (--check against the SHA checkout, patched file sha256-pinned): the
   exact #90 fix (static_graph + explicitly reentrant checkpointing),
   mathematically neutral. The crosscheck results carry this note.
-* wandb: the official script calls ``wandb.init`` on the main process — the
-  wrapper execs it with ``WANDB_MODE=disabled`` (no credentials on the LAN;
-  progress goes to the job log + the final checkpoint).
+* wandb: the pinned script's only external sink is ``wandb.init`` /
+  ``wandb.log`` (main process; the smoothed ``train_loss`` /
+  ``action_accuracy`` / ``l1_loss`` every 10 gradient steps). LAN policy is
+  credential-free wandb — the wrapper therefore shadows the real package
+  with the house sink (``images/wandb_sink.py``, image path
+  ``/opt/robovla/sink/wandb.py``, FIRST on the child's PYTHONPATH): the
+  official log payload lands in the job's standard ``metrics.jsonl``, which
+  the agent poll / SSE ``metrics`` event / the run-detail sparkline consume
+  with no change (one metrics channel; the official's own process is
+  otherwise untouched — disclosed here and in the results, like the
+  build-time #90 patch). The sink's env contract (sink path, total steps,
+  constant lr) is built by ``translate`` and merged over the inherited env
+  in ``main``.
 * steps, not epochs: the official loop runs ``max_steps`` optimizer steps
   over an infinite (repeating) dataset — the wrapper derives
   ``max_steps = epochs x (subset_frames // (batch x grad_accum))`` and sets
@@ -65,17 +78,23 @@ from robovla.core.split import crosscheck_subset
 from robovla.fs import sanitize_dataset_id
 from robovla.proc import run_fixed_argv
 
-from . import contract, engine, rlds_writer
+from . import contract, engine, rlds_writer, wandb_sink
 
 #: Image layout (the Dockerfiles own these paths).
 TORCHRUN = "/opt/venv/bin/torchrun"
 FINETUNE = "/opt/openvla/vla-scripts/finetune.py"
 
-#: The official script's wandb flags (inert under WANDB_MODE=disabled — the
-#: values exist only so the official argv is complete and readable in logs).
+#: The wandb sink's image dir (the Dockerfile COPYs images/wandb_sink.py in
+#: as <SINK_DIR>/wandb.py): first on the child's PYTHONPATH, so the
+#: official's ``import wandb`` resolves to the house sink, not the
+#: pip-installed package (the CPU test pins the wrapper constant and the
+#: Dockerfile dest together — a drift is a silent loss of the curve).
+SINK_DIR = "/opt/robovla/sink"
+
+#: The official script's wandb flags (they feed the sink's init line — the
+#: values exist so the official argv is complete and readable in logs).
 WANDB_PROJECT = "robovla-crosscheck"
 WANDB_ENTITY = "local"
-WANDB_MODE = "disabled"
 
 
 def translate(spec: dict, ds_root: str | Path, job_dir: str | Path,
@@ -85,9 +104,12 @@ def translate(spec: dict, ds_root: str | Path, job_dir: str | Path,
     ``ds_root`` is the agent-pulled dataset root
     (``<workdir>/datasets/<owner>__<task>__vN>``); the RLDS subset lands at
     ``<job_dir>/crosscheck_rlds/`` (the official script sees only those
-    episodes). Returns ``(argv, dirs)`` where ``dirs`` are the official
+    episodes). Returns ``(argv, dirs, env)``: ``dirs`` are the official
     exp_id output dirs (``run_dir`` / ``adapter_dir``) — the artifact
-    manifest's paths. ``writer`` is the RLDS materialization seam (default
+    manifest's paths; ``env`` is the wandb-sink contract (sink target = the
+    job's standard ``metrics.jsonl``, the derived max_steps, the constant
+    lr, and the sink dir on PYTHONPATH) — ``main`` merges it over the
+    inherited env. ``writer`` is the RLDS materialization seam (default
     :func:`images.rlds_writer.write_rlds`; CPU tests inject a recorder so
     the suite never imports tensorflow).
     """
@@ -149,7 +171,13 @@ def translate(spec: dict, ds_root: str | Path, job_dir: str | Path,
         "--wandb_entity", WANDB_ENTITY,
         "--run_id_note", spec["job_id"],
     ]
-    return argv, {"run_dir": run_root / exp, "adapter_dir": adapter_root / exp}
+    env = {
+        wandb_sink.ENV_SINK: str(job_dir / "metrics.jsonl"),
+        wandb_sink.ENV_TOTAL: str(max_steps),
+        wandb_sink.ENV_LR: str(o["lr"]),
+        "PYTHONPATH": SINK_DIR,
+    }
+    return argv, {"run_dir": run_root / exp, "adapter_dir": adapter_root / exp}, env
 
 
 def _write_artifacts(spec: dict, job_dir: Path, workdir: Path,
@@ -198,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
                 "validation", f"not a crosscheck job: {spec['type']!r}")
         job_dir, workdir = contract.job_dirs(spec_path)
         ds_root = workdir / "datasets" / sanitize_dataset_id(spec["dataset"])
-        finetune_argv, dirs = translate(spec, ds_root, job_dir)
+        finetune_argv, dirs, sink_env = translate(spec, ds_root, job_dir)
     except RobovlaError as e:
         print(f"finetune: {e.code}: {e.message}", file=sys.stderr)
         return 1
@@ -209,7 +237,13 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # proc.run_fixed_argv passes `env` straight to subprocess.run, which
         # REPLACES the environment when given — merge over the inherited env.
-        env = {**os.environ, "WANDB_MODE": WANDB_MODE}
+        # The sink dir goes FIRST on PYTHONPATH (shadowing the pip-installed
+        # wandb package for the official's child), preserving any inherited
+        # entries.
+        env = {**os.environ, **sink_env}
+        inherited = os.environ.get("PYTHONPATH")
+        if inherited:
+            env["PYTHONPATH"] = sink_env["PYTHONPATH"] + os.pathsep + inherited
         cp = run_fixed_argv(finetune_argv, env=env)
         # run_fixed_argv CAPTURES the official's streams (capture_output) —
         # forward both to our own stdout/stderr so the agent's job log

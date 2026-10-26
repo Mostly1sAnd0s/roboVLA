@@ -197,16 +197,17 @@ The 50-episode crosscheck — the console engine vs the **official**
 comparison) — is green on host65/4070 (`j_20261022_0002`,
 `tests/hardware/test_selftest.py::test_crosscheck_cuda`, batch 1).
 
-**Image tag:** `robovla-runner-cuda:2026.10.1` (the `.10` tag has no
-official stack). Pin rule: after any image rebuild, re-run
-`test_gpu_selftest_cuda` before trusting the tag. Rebuilds are ~2 min
-(heavy stack layers are decoupled from the `images/` source COPY).
+**Image tag:** `robovla-runner-cuda:2026.10.2` (the wandb sink — below;
+`2026.10.1` predates it, the `.10` tag has no official stack). Pin rule:
+after any image rebuild, re-run `test_gpu_selftest_cuda` before trusting
+the tag. Rebuilds are ~2 min (heavy stack layers are decoupled from the
+`images/` source COPY).
 
 **The official stack (why each pin/flag):**
 
 | Piece | Pin / flag | Why |
 |---|---|---|
-| draccus / accelerate / wandb | 0.8.0 / 1.15.0 / 0.31.0 | the official repo's own pins (`finetune.py`'s config layer, the DDP `PartialState`, its logging) |
+| draccus / accelerate / wandb | 0.8.0 / 1.15.0 / 0.31.0 | the official repo's own pins (`finetune.py`'s config layer, the DDP `PartialState`, its logging — the crosscheck child SHADOWS it with the house sink, below; the package stays installed for import-chain completeness) |
 | tensorflow / tensorflow_datasets | 2.19.1 / 4.9.3 | TFDS is the official pin; the official TF 2.15 predates py3.12 (cp312 wheels start at 2.17) and the image is 3.12 |
 | tensorflow_metadata | 1.17.3 | tfds's floating dep; the latest (1.21.0) ships pb2 gencode built with protobuf 6.x, which fails the runtime-version check (TF 2.19.1 forces protobuf<6) |
 | tensorflow_graphics | **stub** (`images/tfg_stub`) | the official pin (2021.12.3) needs tf-addons — cp39–cp311 wheels only, unresolvable on py3.12. The pinned openvla imports it at module level but only DROID/furniture-bench/iamlab/cmu transforms use it; the crosscheck path (`toto`, a pure `tf.concat`) never does. The stub satisfies the import and every leaf raises a clear RuntimeError |
@@ -246,6 +247,36 @@ forwards the official's captured stdout/stderr into its own streams
 (host65 attempt 5: the swallowed child output hid the real failure
 behind a bare exit code).
 
+**The wandb sink (`images/wandb_sink.py`, 2026-10-23):** the pinned
+`finetune.py` has exactly TWO wandb touchpoints, main process only:
+`wandb.init(entity=…, project=…, name=…)` and `wandb.log(
+{"train_loss", "action_accuracy", "l1_loss"}, step=<gradient step>)`
+— every 10 gradient steps, `train_loss` smoothed over the grad-accum
+window. LAN policy is credential-free wandb; under the old
+`WANDB_MODE=disabled` those calls were no-ops and the official's per-step
+loss was the one crosscheck metric lost (the follow-up below, resolved in
+`2026.10.2`). The wrapper now shadows the real package: the image COPYs
+the sink to `/opt/robovla/sink/wandb.py` and puts that dir FIRST on the
+official child's `PYTHONPATH`, so `import wandb` resolves to the
+stdlib-only house sink. It maps the official payload into the job's
+STANDARD `metrics.jsonl` (house row keys: `loss ← train_loss`, `step` from
+the official kwarg, `total`/`lr` from the sink env; the other
+finite-numeric payload keys — `action_accuracy`, `l1_loss` — pass through
+verbatim), so the agent's incremental poll → SSE `metrics` event →
+run-detail sparkline consume the official's curve with no console/UI
+change (one metrics channel). `init` prints one line to the job log and
+writes nothing to `metrics.jsonl` (the agent reads every JSON dict line
+there as a metrics row — a header line would corrupt the stream).
+Fail-loud: unknown wandb attributes raise — the pinned surface is
+init/log, so a re-pinned script with a larger surface fails the
+crosscheck visibly, not silently. CPU-pinned in
+`tests/unit/test_wandb_sink.py` (row mapping, the env contract, the
+no-op default, the fail-loud edges, name independence of the aliased
+file, and the Dockerfile-dest ↔ wrapper-`SINK_DIR` agreement); the
+hardware row now asserts the sink's rows (`_assert_crosscheck_ok`).
+Disclosed in the results like the #90 patch: the official's own process
+is otherwise untouched — the sink is a logging stand-in.
+
 **Known degradations (documented in the results):**
 - TFDS 4.9.3 rejects the deliberately empty `val` split ("No examples
   were yielded") — the writer's primary (train + empty val, which would
@@ -253,14 +284,10 @@ behind a bare exit code).
   train-only, and the official then trains `train[:95%]`: **47/50
   episodes** (the last 3 of the subset, deterministically held out).
   `dataset_statistics.json` is computed on all 50 (1000 transitions).
-- The pinned `finetune.py` logs loss **only via `wandb.log`** (smoothed
-  `train_loss` / `l1_loss` per step); the wrapper execs with
-  `WANDB_MODE=disabled` (no credentials on the LAN) — the job log
-  carries the official's live progress (tqdm, checkpoint events) and the
-  wrapper's manifest line, but not per-step loss values. A wandb
-  **offline** sink (credential-free; parse the offline run back into
-  `crosscheck_loss.jsonl`) is the follow-up for the student curve
-  comparison.
+- The loss curve is the official's `train_loss` smoothed over the
+  grad-accum window, logged every 10 gradient steps (the pinned script's
+  own cadence — not per micro-batch); `action_accuracy` is TRAIN accuracy
+  (the held-out comparison stays the console side's `val.json`).
 
 **Silicon result (2026-10-22, host65/RTX 4070 12 GB, batch 1):**
 
@@ -272,7 +299,7 @@ behind a bare exit code).
 | LoRA footprint | 110,828,288 / 7,652,065,472 trainable (1.4483%); r32, α16 (the official's hardcoded `min(rank, 16)`), bias none |
 | artifacts (file contract, workdir-relative) | adapter dir 968,788,735 B (`adapter_model.safetensors` 968,782,584 B); merged 15,086,381,550 B (4 safetensors shards + tokenizer/config + `dataset_statistics.json`) |
 | exp_id | `openvla-7b+toto+b8+lr-0.0005+lora-r32+dropout-0.0+q-4bit--j_20261022_0002--image_aug` |
-| loss curve | not in the job log (wandb-only sink — degradations above) |
+| loss curve | not captured (this run used `2026.10.1`, which predates the wandb sink — the next crosscheck re-run carries it via `metrics.jsonl`; the hardware row asserts it) |
 
 **Official-vs-recipe deltas** (the comparison is shape/convergence, not
 point-for-point):
@@ -283,16 +310,17 @@ point-for-point):
 | LoRA α | 16 (hardcoded `min(rank, 16)`) | 32 |
 | data order | unseeded TF shuffle | seeded split, in order |
 | eff-batch | 8 (batch 1 × grad_accum 8) | 8 (same) |
-| loss visibility | wandb-only | per-step `metrics.jsonl` |
+| loss visibility | wandb sink → the job's `metrics.jsonl` (smoothed, every 10 grad steps; `action_accuracy`/`l1_loss` ride along) | per-step `metrics.jsonl` |
 
 **Ops (this row):** LONG (27 min on the 4070 — run it detached:
 `setsid nohup` + poll). The pytest log only grows when the podman process
 exits (capture_output) — a ~272 B log mid-run is NORMAL, not a hang;
 `pgrep -f test_crosscheck` self-matches its own command line — confirm
 liveness via nvidia-smi (idle = 27 MiB) + the log. Re-kick:
-`rm -rf <job_dir>/{crosscheck_rlds,crosscheck_out}` first (TFDS reuses an
-existing `toto/1.0.0` — stale data would poison the run), then
-`GPU_TESTS=1 ROBOVLA_IMAGE_CUDA=robovla-runner-cuda:2026.10.1
+`rm -rf <job_dir>/{crosscheck_rlds,crosscheck_out,metrics.jsonl}` first
+(TFDS reuses an existing `toto/1.0.0` — stale data would poison the run;
+the sink APPENDS — a same-job re-run would mix stale rows), then
+`GPU_TESTS=1 ROBOVLA_IMAGE_CUDA=robovla-runner-cuda:2026.10.2
 ROBOVLA_WORK_DIR=… ROBOVLA_MODEL_DIR=… setsid nohup .venv/bin/python -m
 pytest tests/hardware/test_selftest.py::test_crosscheck_cuda -m hardware
 -v -rs > /tmp/…log 2>&1 &`. The row persists the official's captured
@@ -345,3 +373,4 @@ fwd/bwd; no 8-bit section, no bnb).
 | `timm` version error at model load | pin timm to the hard-checked set (0.9.10 in the image) |
 | bf16 fwd/bwd skipped in selftest | by design on ≤12 GB GPUs (`free < 20 GB` branch) |
 | model re-downloads inside the container | `HF_HUB_CACHE=/models` missing from `node.env` (env file passes through) |
+| crosscheck job: official trains fine but no loss curve in the run detail | the image predates the sink COPY (`/opt/robovla/sink/wandb.py` missing) — `import wandb` in the child hit the real package and no-opped; rebuild (`2026.10.2`) |
