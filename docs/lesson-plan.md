@@ -1,11 +1,13 @@
 # Capstone Lesson Plan: "Teaching a 7B Robot"
 ## Fine-tuning OpenVLA-7B on a Mecanum Rover — 12 Weeks × 85-Minute Classes
 
+**v1.3 (2026-10-26):** companion pointer → the frozen spec v0.5.1 (post-review clarifications only — no content drift from v1.2; the README ⚠️ flagging the 12-student revision is closed, it landed in v1.1).
+
 **v1.2 (2026-10-21):** console spec refs bumped to v0.5 · gate M5 cites the smoke job's predict-action probe (design §6) · Class 11 slot-rotation arithmetic corrected.
 
 **v1.1 (2026-10-20):** 12 individual students / 1 robot each (no teams) · training-console workflow replaces the TUI build (design doc v0.5) · launch fleet = **pai1 only** (1 trainer, 2 inference slots; more GPUs join later via the console admin page — nothing here depends on them).
 
-**Companion docs:** `training-console-design.md` v0.5 (the console spec — the class *runs on* it) · `model-card-review.md` (fact-check of the original proposal) · `setup-and-materials.md` (BOM, network, pre-class-1 checklist)
+**Companion docs:** `training-console-design.md` v0.5.1 (frozen; the console spec — the class *runs on* it) · `model-card-review.md` (fact-check of the original proposal) · `setup-and-materials.md` (BOM, network, pre-class-1 checklist)
 
 ---
 

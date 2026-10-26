@@ -1,6 +1,8 @@
 # Setup, Materials & Pre-Class-1 Checklist
 
-Companion to `lesson-plan.md` (v1.2) and `model-card-review.md`; fleet and console detail lives in `training-console-design.md` v0.5 (authoritative).
+Companion to `lesson-plan.md` (v1.3) and `model-card-review.md`; fleet and console detail lives in `training-console-design.md` v0.5.1 (frozen, authoritative).
+
+**v1.3 (2026-10-26):** companion pointer → the frozen spec v0.5.1 (post-review clarifications only — no content drift from v1.2; the README ⚠️ flagging the 12-student revision is closed, it landed in v1.1).
 
 **v1.2 (2026-10-21):** §2/§3 rewritten for the v0.5 container architecture (runner image + agent + quadlet; no torch on the console host; model via the agent's `model_download` job) · §7 robot endpoint corrected to the console's `:8501/api/robot/predict` (there is no robot port 8502) · tenancy checklist now manual (design §3: plain-process assistant, no `ninfer.service`) · gamepad ref → design §14 Q3 · §5 end-to-end timing total corrected.
 
@@ -86,7 +88,7 @@ Companion to `lesson-plan.md` (v1.2) and `model-card-review.md`; fleet and conso
 | **Standalone capture app** (PySide6: discovery, 10 Hz view, teleop, logging, pre-upload QA, one-click upload, replay check) — students own the QA panel, input, upload, board view | laptop | 17 |
 | Extension prototypes | various | 17 |
 
-**Suggested split of labor:** instructor provides *partial* implementations of `frame_sender/receiver`, `ik_node` skeleton, `action_adapter` skeleton, and the baseline controller — students complete, test, and extend them. Everything console-side (design doc v0.5) is pre-built by the AI coder; the class's job is to **operate and read** the instrument (Classes 9–10), then **own part of it** (the capture app, Class 17).
+**Suggested split of labor:** instructor provides *partial* implementations of `frame_sender/receiver`, `ik_node` skeleton, `action_adapter` skeleton, and the baseline controller — students complete, test, and extend them. Everything console-side (design doc v0.5.1) is pre-built by the AI coder; the class's job is to **operate and read** the instrument (Classes 9–10), then **own part of it** (the capture app, Class 17).
 
 ## 5. Network & control-loop timing budget (teach this in Class 2, enforce in Class 11)
 

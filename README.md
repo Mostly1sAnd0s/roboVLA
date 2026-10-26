@@ -9,8 +9,8 @@ Fine-tuning **OpenVLA-7B** (a 7.5B vision–language–action model) for a high-
 | [`docs/training-console-design.md`](docs/training-console-design.md) | **The spec.** v0.5.1, implementation-ready: fleet config, full API schema, admin controls, TDD/DRY contract, test matrix, build phases, repo layout. A future AI coder starts here. |
 | [`docs/model-card-review.md`](docs/model-card-review.md) | Fact-check of the OpenVLA-7B model card / repo against the project plan (verified 2026-10-20): action un-normalization, ~100-demo dataset floor, ~1.5–2.5 Hz closed-loop latency rebase, official sanity checks. |
 | [`docs/runner-image.md`](docs/runner-image.md) | **Per-platform podman procedure** (NVIDIA + AMD/ROCm): host prereqs (setuid `uidmap` is load-bearing for rootless), image build (pinned-stack traps), CDI GPU passthrough, quadlet + `node.env` deploy, model volume = HF hub-cache dir (`HF_HUB_CACHE=/models` offline load), verification (health / `gpu_selftest` / hardware rows), the host65 no-root user-local variant, troubleshooting. |
-| [`docs/lesson-plan.md`](docs/lesson-plan.md) | 24-class / 85-min active-learning plan with milestone gates M1–M8. ⚠️ Being revised from the 4-team model to 12 individual students / 1 robot each (see console design §12). |
-| [`docs/setup-and-materials.md`](docs/setup-and-materials.md) | BOM, pinned software, episode data spec, pre-class checklist. ⚠️ Same 12-student revision pending. |
+| [`docs/lesson-plan.md`](docs/lesson-plan.md) | 24-class / 85-min active-learning plan, milestone gates M1–M8 — 12 individual students / 1 robot each, no teams (design §12; revision landed v1.1, 2026-10-20). |
+| [`docs/setup-and-materials.md`](docs/setup-and-materials.md) | BOM, pinned software, episode data spec, pre-class checklist — 12 individual students / 1 robot each (revision landed v1.1, 2026-10-20). |
 
 ## Status (2026-10-23)
 
