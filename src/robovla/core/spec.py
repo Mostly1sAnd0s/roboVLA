@@ -43,6 +43,38 @@ RECIPE_EFFECTIVE_BATCH = 8
 DEFAULT_MODEL = "openvla/openvla-7b"
 DEFAULT_PROMPT_TEMPLATE = "In: What action should the robot take to {task}?\nOut:"
 DEFAULT_LR = 5e-4
+
+#: Model families. The family is DERIVED from the model id (no new JobSpec
+#: key — Appendix B stays frozen): an id containing "smolvla" (e.g. the
+#: base checkpoint "lerobot/smolvla_base", or a student-published
+#: fine-tune of it) routes the argv to the lerobot job program and the
+#: serving seam to the SmolVLA loader. Everything else is the openvla
+#: engine path. Pure string rule, one site, shared by the agent argv and
+#: the serving factory (§11 DRY).
+MODEL_FAMILY_OPENVLA = "openvla"
+MODEL_FAMILY_SMOLVLA = "smolvla"
+
+#: Per-family catalog learning rate (the openvla QLoRA recipe is 5e-4;
+#: the SmolVLA paper's fine-tune preset is 1e-4 — the base config's own
+#: ``optimizer_lr``). ``build_job_spec`` picks the preset by family so a
+#: family switch never silently carries the other family's lr.
+FAMILY_DEFAULT_LR = {
+    MODEL_FAMILY_OPENVLA: DEFAULT_LR,
+    MODEL_FAMILY_SMOLVLA: 1e-4,
+}
+
+
+def model_family(model_id: Any) -> str:
+    """The model family for a JobSpec ``model`` id (pure, total).
+
+    "smolvla" when the id names a SmolVLA checkpoint (substring match —
+    covers the base id and any fine-tune published under a name carrying
+    it), else "openvla". The single routing site for the agent argv
+    (``agent/argv.py``) and the serving factory (``agent/serve.py``).
+    """
+    if isinstance(model_id, str) and "smolvla" in model_id.lower():
+        return MODEL_FAMILY_SMOLVLA
+    return MODEL_FAMILY_OPENVLA
 DEFAULT_EPOCHS = 3
 DEFAULT_LORA_RANK = 32
 DEFAULT_LORA_ALPHA = 32
@@ -372,7 +404,7 @@ def build_job_spec(
         "quant": quant,
         "lora": {"rank": DEFAULT_LORA_RANK, "alpha": DEFAULT_LORA_ALPHA},
         "optim": {
-            "lr": DEFAULT_LR,
+            "lr": FAMILY_DEFAULT_LR[model_family(model)],
             "epochs": DEFAULT_EPOCHS,
             "batch": batch,
             "grad_accum": grad_accum,

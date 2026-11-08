@@ -23,10 +23,14 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Protocol
+
+import numpy as np
 from PIL import Image
 
 from robovla.core.errors import RobovlaError
-from robovla.core.spec import DEFAULT_MODEL
+from robovla.core.spec import DEFAULT_MODEL, MODEL_FAMILY_SMOLVLA, model_family
+from robovla.smolvla import (SMOLVLA_CAMERA_KEY, SERVING_META_NAME,
+                             parse_serving_meta, to_house_action)
 
 
 class Model(Protocol):
@@ -113,6 +117,114 @@ class TorchVlaModel:
                     pass
 
 
+class SmolVlaModel:
+    """The SmolVLA serving model — the family's half of the ``Model`` seam.
+
+    Loads a trained policy directory (the wrapper's artifact: lerobot's
+    ``pretrained_model/`` — config + weights + saved processor states +
+    the stamped ``serving.json``, ``robovla.smolvla``). The GPU stack is
+    imported lazily (the §11 boundary; the same rule as TorchVlaModel).
+
+    Chunking (SmolVLA's own answer to the OpenVLA latency rebase): the
+    policy's ``select_action`` caches a 50-step action chunk internally,
+    so a 10 Hz robot consumes fresh actions and the GPU recomputes every
+    ~5 s — one predict per robot request, the §9.5 API unchanged. The
+    ``prompt`` is the RAW task string (the chat processor owns the
+    format; the openvla In:/Out: wrap does not apply here).
+
+    ``loader`` is the stack seam (CPU tests inject a deterministic fake;
+    production gets ``_load_smolvla_stack``).
+    """
+
+    def __init__(self, model_id: str, adapter_path: str | Path,
+                 *, loader=None) -> None:
+        if not model_id:
+            raise RobovlaError("validation", "model id is required")
+        self._model_id = model_id
+        self._adapter = Path(adapter_path)
+        if not self._adapter.is_dir():
+            raise RobovlaError("not_found",
+                               f"policy dir not found on node: {self._adapter}")
+        meta = self._adapter / SERVING_META_NAME
+        if not meta.is_file():
+            raise RobovlaError(
+                "not_found",
+                f"policy dir {self._adapter} carries no {SERVING_META_NAME} — "
+                "not a servable smolvla artifact (train with the smolvla "
+                "wrapper; the stamp lands on a clean exit)")
+        try:
+            self._stats = parse_serving_meta(json.loads(meta.read_text()))
+        except (ValueError, OSError) as e:
+            raise RobovlaError(
+                "validation", f"unreadable {SERVING_META_NAME}: {e}") from e
+        self._loader = loader or _load_smolvla_stack
+        self._bundle = None
+        self._load_lock = threading.Lock()
+
+    def _ensure_loaded(self):
+        if self._bundle is None:
+            with self._load_lock:
+                if self._bundle is None:
+                    try:
+                        self._bundle = self._loader(self._adapter)
+                    except RobovlaError:
+                        raise
+                    except ImportError as e:
+                        raise RobovlaError(
+                            "internal",
+                            f"serving stack unavailable in this image: "
+                            f"{getattr(e, 'name', e)}") from e
+        return self._bundle
+
+    def predict(self, image_b64: str, prompt: str) -> list[float]:
+        policy, preprocess, postprocess, torch = self._ensure_loaded()
+        if not prompt:
+            raise RobovlaError("validation", "prompt is required")
+        try:
+            img = Image.open(io.BytesIO(base64.b64decode(image_b64))).convert("RGB")
+        except Exception as e:
+            raise RobovlaError(
+                "validation",
+                f"image is not a decodable JPEG: {e.__class__.__name__}") from e
+        frame = {
+            # lerobot convention: CHW float [0, 1] (what the dataset
+            # reader hands the trainer's preprocessor at train time).
+            SMOLVLA_CAMERA_KEY: torch.from_numpy(
+                np.asarray(img, dtype=np.float32).transpose(2, 0, 1) / 255.0),
+            "task": prompt,
+        }
+        with torch.inference_mode():
+            batch = preprocess(frame)
+            action = postprocess(policy.select_action(batch))
+        raw = [float(x) for x in torch.asarray(action).reshape(-1)[:3]]
+        return list(to_house_action(raw, self._stats))
+
+    def unload(self) -> None:
+        with self._load_lock:
+            self._bundle = None
+            try:
+                import torch
+                torch.cuda.empty_cache()
+            except Exception:  # pragma: no cover - no-GPU path
+                pass
+
+
+def _load_smolvla_stack(adapter_dir: Path):
+    """The real stack load (lazy; the only place the smolvla image's lerobot
+    pin is touched at serve time). Returns
+    ``(policy, preprocess, postprocess, torch)``."""
+    import torch
+    from lerobot.policies.smolvla.modeling_smolvla import SmolVLAPolicy
+    from lerobot.policies.factory import make_pre_post_processors
+
+    policy = SmolVLAPolicy.from_pretrained(str(adapter_dir))
+    preprocess, postprocess = make_pre_post_processors(
+        policy.config, str(adapter_dir),
+        preprocessor_overrides={"device_processor": {"device": "cuda"}})
+    policy.eval()
+    return policy, preprocess, postprocess, torch
+
+
 class SlotServing:
     """Slot handles over loaded models (the ``/serve`` + ``/predict`` core)."""
 
@@ -187,9 +299,12 @@ class SlotServing:
 
 def make_default_model_factory(workdir: str | Path, *,
                                log=None):
-    """Production factory: TorchVlaModel, model id from the run's spec if
-    present on this node (else the catalog default), adapter resolved under
-    the workdir."""
+    """Production factory, routed by model FAMILY (``core.spec.model_family``
+    over the run's spec.json model id — the same derivation the agent argv
+    uses, §11 DRY): TorchVlaModel for the openvla engine path,
+    SmolVlaModel for a lerobot-trained policy dir (the spec.json is
+    optional — without it the openvla catalog default stands, the
+    pre-family contract unchanged)."""
     def factory(run_id: str, adapter: str):
         model_id = DEFAULT_MODEL
         spec_path = Path(workdir) / "runs" / run_id / "spec.json"
@@ -198,5 +313,8 @@ def make_default_model_factory(workdir: str | Path, *,
                 model_id = json.loads(spec_path.read_text()).get("model") or model_id
             except (ValueError, OSError):
                 pass
-        return TorchVlaModel(model_id, Path(workdir) / adapter)
+        path = Path(workdir) / adapter
+        if model_family(model_id) == MODEL_FAMILY_SMOLVLA:
+            return SmolVlaModel(model_id, path)
+        return TorchVlaModel(model_id, path)
     return factory

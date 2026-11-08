@@ -1,0 +1,102 @@
+# robovla-runner-smolvla-cuda — the SmolVLA family runner image.
+#
+# The per-node container for the SECOND model family (SmolVLA, lerobot
+# stack). Same contract as Dockerfile.cuda: the agent serves on :8601,
+# jobs launch through the fixed-argv bin dir (no shell, ever), the host
+# quadlet mounts workdir -> /data and the model volume -> /models. The
+# agent's argv routes a spec to `smolvla_job` when the model id names a
+# SmolVLA checkpoint (core.spec.model_family), so a fleet node runs this
+# image IN PLACE OF the openvla image — one image per node, chosen at
+# wiring time (the scheduler measures VRAM; it does not yet know image
+# families: pin SmolVLA nodes by config, section 10 follow-up).
+#
+# Stack pins (SmolVLA pilot, 2026-11 — UNVERIFIED on silicon until the
+# hardware rows run: pin rule = new tag + selftest before trusting, same
+# as every image):
+#   lerobot 0.7.0 ([smolvla,training] extras — the trainer, the SmolVLA
+#   policy, accelerate, trackio). Its own floors (python>=3.12,
+#   torch>=2.7,<2.16, transformers 5.22.x) are the reason this family is
+#   a SEPARATE image: the openvla image pins transformers 4.51.3 +
+#   TF 2.19.1 (protobuf<6) — unresolvable together. The LeRobotDataset
+#   format needs NO tensorflow at all (parquet + PNG), so the tfg stub /
+#   protobuf / dlimp layers of Dockerfile.cuda simply do not exist here.
+#   torch 2.9.0+cu128 + torchvision 0.24.0+cu128 — SAME trap as the
+#   openvla image: install in ONE command or the resolver floats both to
+#   cu130. cu128 also carries the sm_120 (Blackwell) kernels; lerobot's
+#   torch range accepts the campus pins as-is.
+#   ffmpeg (apt): torchcodec (a linux-x86_64 hard dep of lerobot) links
+#   the system libav libraries at import. Image-mode datasets never
+#   decode video, but the import chain must not explode; verified at the
+#   hardware row.
+#
+# Model source: offline volume, same rule as the openvla image — the
+# quadlet mounts the HF hub cache at /models (HF_HUB_CACHE=/models,
+# HF_HUB_OFFLINE=1 via node.env). The SmolVLA node's volume must hold
+# BOTH `lerobot/smolvla_base` AND its backbone
+# `HuggingFaceTB/SmolVLM2-500M-Video-Instruct` (and the tokenizer assets
+# they pull). Populate with `robovla cli model_download` before wiring.
+#
+# Build (from the repo root):
+#   podman build -t robovla-runner-smolvla-cuda:2026.11.0 \
+#       -f images/Dockerfile.cuda-smolvla .
+
+FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH"
+
+# uv + Python 3.12 + the torchcodec link deps (see the ffmpeg note above).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl git ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
+    && uv python install 3.12 \
+    && uv venv --python 3.12 /opt/venv
+
+# torch + torchvision in ONE command against the cu128 index (the shared-
+# resolve pin trap; lerobot's range accepts them — do NOT let a later
+# lerobot install float them).
+RUN uv pip install \
+        torch==2.9.0+cu128 torchvision==0.24.0+cu128 \
+            --index-url https://download.pytorch.org/whl/cu128
+
+# The pinned trainer (console script: /opt/venv/bin/lerobot-train).
+# --extra training carries accelerate + trackio (the sink shadows the
+# latter at job time); --extra smolvla carries transformers 5.22.x +
+# num2words + accelerate per the lerobot pyproject.
+RUN uv pip install "lerobot[smolvla,training]==0.7.0"
+
+# The wheel inputs (src/robovla + agent — the console AND agent packages;
+# the images package is NOT in the wheel, same rule as Dockerfile.cuda).
+COPY pyproject.toml README.md /opt/robovla/
+COPY src /opt/robovla/src
+COPY agent /opt/robovla/agent
+RUN uv pip install /opt/robovla
+
+# The images package (the wrapper + writer) AFTER the heavy layers, so a
+# source edit re-runs only this small COPY.
+COPY images /opt/robovla/images
+
+# The Trackio sink (images/trackio_sink.py ships under its ALIASED name):
+# the smolvla wrapper puts this dir FIRST on the child's PYTHONPATH so
+# `import trackio` resolves to the house sink (stdlib-only; the curve
+# lands in the job's standard metrics.jsonl — the agent poll / SSE /
+# sparkline consume it with no change; unknown attributes fail loud).
+COPY images/trackio_sink.py /opt/robovla/sink/trackio.py
+
+# Fixed-argv entrypoints (python scripts — never a shell). smolvla_job is
+# this image's family program; robovla_job ships too so the image can run
+# NOTHING ELSE — the openvla types fail fast against the absent TF pins.
+COPY images/bin /opt/robovla/bin
+RUN chmod +x /opt/robovla/bin/smolvla_job /opt/robovla/bin/robovla_job
+
+# The agent owns the process lifecycle; :8601 is console-only traffic.
+# Host mounts (podman quadlet): <host workdir> -> /data, <model volume> ->
+# /models. ENTRYPOINT rule (host65 first boot): -m agent, NOT
+# -m agent.server (no __main__ guard there — silent exit).
+WORKDIR /data
+EXPOSE 8601
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent"]

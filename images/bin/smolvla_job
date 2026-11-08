@@ -1,0 +1,12 @@
+#!/opt/venv/bin/python
+# The SmolVLA family entrypoint (the agent's fixed argv routes the family's
+# smoke/train specs here — NOT robovla_job, NOT finetune): it validates
+# the spec, materializes the seeded train split as a local LeRobotDataset,
+# and execs the OFFICIAL lerobot-train with a fixed argv (the house proc
+# seam — no shell, ever). Lives in images/Dockerfile.cuda-smolvla.
+import sys
+
+sys.path.insert(0, "/opt/robovla")
+from images.smolvla_finetune import main  # noqa: E402
+
+sys.exit(main())
