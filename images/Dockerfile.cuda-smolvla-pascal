@@ -33,7 +33,10 @@
 # Pin rule: the tag is UNTRUSTED until its first smoke passes on the
 # 1070 (new tag + verified smoke, same as every image here).
 
-FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+# Fully-qualified: rootless podman with short-name resolution enforced
+# cannot prompt for a registry without a TTY (caught at the first build,
+# 2026-11-08).
+FROM docker.io/nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
 
 ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
