@@ -13,6 +13,7 @@ from robovla.core.spec import (
     ALLOWED_BATCHES,
     JOB_TYPES,
     MAX_SEQ_LEN,
+    QUANT_FAMILIES,
     QUANT_PROFILES,
     RECIPE_EFFECTIVE_BATCH,
     build_job_spec,
@@ -55,7 +56,10 @@ class TestContractConstants:
 
     def test_allowed_batches_and_quant(self):
         assert ALLOWED_BATCHES == (1, 4, 8)  # §3: allowed batch (1 / 4 / 8)
-        assert QUANT_PROFILES == frozenset({"bnb8", "bf16"})
+        assert QUANT_PROFILES == frozenset({"bnb8", "bf16", "fp32"})
+        # one catalog: the family gate must cover every profile exactly
+        # (a drift would KeyError in the validator, never pass silently).
+        assert set(QUANT_FAMILIES) == set(QUANT_PROFILES)
         assert RECIPE_EFFECTIVE_BATCH == 8
 
 
@@ -128,6 +132,29 @@ class TestValidator:
         assert validate_job_spec(_valid_dict(quant="bf16")).quant == "bf16"
         with pytest.raises(RobovlaError):
             validate_job_spec(_valid_dict(quant="fp16"))
+
+    def test_fp32_is_accepted_on_the_smolvla_family(self):
+        # fp32 exists for Pascal silicon (no bf16 math on sm_61). The
+        # profile is family-gated, one site (the validator).
+        d = _valid_dict(quant="fp32", model="lerobot/smolvla_base")
+        assert validate_job_spec(d).quant == "fp32"
+
+    def test_fp32_is_rejected_on_the_openvla_family(self):
+        # engine.py implements the bnb8/bf16 paths only; the spec says
+        # so at submit time (§9.6 validation, not a late engine fail).
+        with pytest.raises(RobovlaError) as e:
+            validate_job_spec(_valid_dict(quant="fp32"))
+        assert e.value.code == "validation"
+        assert "fp32" in e.value.message
+
+    def test_bnb8_is_rejected_on_the_smolvla_family(self):
+        # no bitsandbytes in the SmolVLA image; a bnb8 spec must not
+        # reach the wrapper and silently train unquantized.
+        with pytest.raises(RobovlaError) as e:
+            validate_job_spec(_valid_dict(quant="bnb8",
+                                           model="lerobot/smolvla_base"))
+        assert e.value.code == "validation"
+        assert "bnb8" in e.value.message
 
     def test_max_seq_len_must_be_287(self):
         d = _valid_dict()

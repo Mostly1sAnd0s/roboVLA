@@ -33,9 +33,12 @@ host65-attempt-5 rule).
 
 Recipe deltas vs the openvla engine (documented, deliberate):
 
-  * quant: none — SmolVLA is 450 M; bf16 (mixed precision + bf16 policy
-    weights) fits every campus node with headroom. The spec's ``quant``
-    rides along for the scheduler but the trainer never sees bnb.
+  * quant: the spec's ``quant`` maps onto lerobot's ONE precision knob —
+    ``--accelerator.mixed_precision`` (``MIXED_PRECISION`` below). bf16 is
+    the campus default; fp32 (``no``) is the Pascal profile (sm_61 has no
+    bf16 math). The wrapper never passes ``--policy.dtype`` — the policy
+    weights stay float32 either way, and bnb never exists in this image
+    (the spec validator rejects bnb8 for the family, one site).
   * LoRA: the DEFAULT fine-tune is SmolVLA's own preset — the VLM and
     vision encoder FROZEN, the ~100 M action expert trained (base-config
     ``train_expert_only``). The spec's ``lora`` fields are unused here
@@ -103,6 +106,13 @@ SINK_DIR = "/opt/robovla/sink"
 #: exist so the official argv is complete and readable in logs).
 TRACKIO_PROJECT = "robovla-smolvla"
 
+#: Spec ``quant`` -> ``--accelerator.mixed_precision`` (the ONLY precision
+#: knob this wrapper passes). "no" keeps the run float32 end to end — the
+#: Pascal/sm_61 profile (bf16 kernels do not exist there; fp16 math is
+#: crippled on GeForce Pascal). An unlisted quant is a loud validation
+#: error, never a silent bf16 default.
+MIXED_PRECISION = {"bf16": "bf16", "fp32": "no"}
+
 #: The scheduler shape around the house lr (SmolVLA base-config presets;
 #: lerobot auto-scales warmup/decay into runs shorter than decay steps).
 SCHEDULER_TYPE = "cosine_decay_with_warmup"
@@ -155,6 +165,13 @@ def translate(spec: dict, ds_root: str | Path, job_dir: str | Path,
         raise RobovlaError("dataset_not_ready",
                            f"train split is empty ({len(ids)} episodes)")
 
+    mp = MIXED_PRECISION.get(spec["quant"])
+    if mp is None:
+        raise RobovlaError("validation",
+                           f"quant {spec['quant']!r} has no smolvla "
+                           f"mixed-precision mapping (known: "
+                           f"{sorted(MIXED_PRECISION)})")
+
     o = spec["optim"]
     steps = lerobot_writer.lerobot_steps(frames_total, o["batch"], o["epochs"])
     if spec["type"] == "smoke":
@@ -201,7 +218,7 @@ def translate(spec: dict, ds_root: str | Path, job_dir: str | Path,
         "--scheduler.num_decay_steps", str(SCHEDULER_DECAY),
         "--scheduler.peak_lr", lr,
         "--scheduler.decay_lr", str(SCHEDULER_DECAY_LR),
-        "--accelerator.mixed_precision", "bf16",
+        "--accelerator.mixed_precision", mp,
         "--accelerator.gradient_accumulation.steps", str(o["grad_accum"]),
         "--trackio.enable", "true",        # -> the house sink (shadowed)
         "--trackio.project", TRACKIO_PROJECT,

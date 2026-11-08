@@ -40,6 +40,14 @@ class TestTrainEstimate:
         assert estimate_train_gb(22.0, "bf16", 1, 2) == pytest.approx(15.0 + (22.0 - 15.0) * 0.5)
         assert FIXED_GB["bf16"] == pytest.approx(15.0)
 
+    def test_fp32_profile_exists(self):
+        # fp32 is the SmolVLA-family profile (Pascal silicon). The floor
+        # is the 450 M fp32 footprint class, NOT the 7.5 B one — the
+        # family gate in spec.py keeps openvla specs off this profile.
+        assert "fp32" in FIXED_GB
+        assert FIXED_GB["fp32"] < FIXED_GB["bnb8"]
+        assert estimate_train_gb(7.0, "fp32", 8, 8) == pytest.approx(7.0)
+
     @pytest.mark.parametrize("args", [
         (5.0, "bnb8", 1, 8),   # base below the model's fixed floor
         (18.0, "fp42", 1, 8),  # unknown quant profile

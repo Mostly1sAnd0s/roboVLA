@@ -20,7 +20,11 @@ from .errors import RobovlaError
 #: Batch-independent VRAM floor per quant profile (GB).
 #:   bnb8: 8-bit 7.5B weights (~8 GB) + LoRA adapters/optimizer (~2 GB)
 #:   bf16: 15 GB bf16 weights (design §1: "bf16 training doesn't fit")
-FIXED_GB = {"bnb8": 10.0, "bf16": 15.0}
+#:   fp32: the SmolVLA-family profile (Pascal silicon has no bf16 math;
+#:         the spec family gate keeps the 7.5 B openvla off it). Floor =
+#:         450 M fp32 weights (~1.8 GB) + optimizer/activation headroom
+#:         (handoff §2.3; host65-class boxes are budgeted against it).
+FIXED_GB = {"bnb8": 10.0, "bf16": 15.0, "fp32": 4.0}
 
 #: Quant profiles (fleet.yaml ``gpu.quant`` / JobSpec ``quant``) — single
 #: definition, derived from the VRAM model above.

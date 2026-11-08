@@ -63,6 +63,20 @@ FAMILY_DEFAULT_LR = {
     MODEL_FAMILY_SMOLVLA: 1e-4,
 }
 
+#: Quant profiles allowed per model family — the ONE gate site (the
+#: validator runs it; build_job_spec passes through the same validator).
+#:   bnb8: openvla only — bitsandbytes lives in the openvla image, and
+#:         the SmolVLA wrapper would silently ignore it.
+#:   bf16: both families (the campus default precision).
+#:   fp32: smolvla only — Pascal (sm_61) silicon has no bf16 math; the
+#:         openvla engine implements bnb8/bf16 only, so an fp32 openvla
+#:         spec fails at submission (§9.6), not at model load.
+QUANT_FAMILIES = {
+    "bnb8": frozenset({MODEL_FAMILY_OPENVLA}),
+    "bf16": frozenset({MODEL_FAMILY_OPENVLA, MODEL_FAMILY_SMOLVLA}),
+    "fp32": frozenset({MODEL_FAMILY_SMOLVLA}),
+}
+
 
 def model_family(model_id: Any) -> str:
     """The model family for a JobSpec ``model`` id (pure, total).
@@ -289,6 +303,9 @@ def validate_job_spec(d: Any) -> JobSpec:
         _fail(f"type: {d['type']!r} is not a known job type")
     if d["quant"] not in QUANT_PROFILES:
         _fail(f"quant: {d['quant']!r} is not a known quant profile")
+    family = model_family(d["model"])
+    if family not in QUANT_FAMILIES[d["quant"]]:
+        _fail(f"quant: {d['quant']!r} is not a profile of the {family} family")
 
     batch = _int(optim["batch"], "optim.batch", lo=1, hi=8)
     accum = _int(optim["grad_accum"], "optim.grad_accum", lo=1, hi=64)
@@ -299,7 +316,7 @@ def validate_job_spec(d: Any) -> JobSpec:
         if accum != expected:
             _fail(f"optim.grad_accum: bnb8 batch {batch} requires grad_accum {expected}")
     elif batch not in BF16_BATCHES:
-        _fail(f"optim.batch: bf16 batches are {BF16_BATCHES}")
+        _fail(f"optim.batch: {d['quant']} batches are {BF16_BATCHES}")
 
     seq_len = _int(optim["max_seq_len"], "optim.max_seq_len", lo=1, hi=1024)
     if seq_len != MAX_SEQ_LEN:

@@ -64,11 +64,11 @@ def _workdir(tmp_path) -> tuple[Path, Path]:
 
 
 def _spec(job_type: str = "train", model: str = "lerobot/smolvla_base",
-          **kw) -> dict:
+          quant: str = "bf16", **kw) -> dict:
     return build_job_spec(
         job_id=JOB, student=STUDENT, job_type=job_type, dataset=DATASET,
         node_id="avc", node_agent="10.0.0.9:8601", budget_gb=12,
-        model=model, quant="bf16", **kw,
+        model=model, quant=quant, **kw,
     ).to_dict()
 
 
@@ -157,6 +157,18 @@ def test_translate_argv_pins_the_lerobot_surface(tmp_path, recorder):
     # job dir; no user free text ever rides the command line
     assert all(isinstance(x, str) for x in argv)
     assert TASK not in " ".join(argv)
+
+
+def test_translate_maps_fp32_to_no_mixed_precision(tmp_path, recorder):
+    # Pascal (sm_61) has no bf16 math: an fp32 spec must train float32
+    # end to end. lerobot's knob is --accelerator.mixed_precision no;
+    # the wrapper never passes --policy.dtype (weights stay float32).
+    workdir, ds_root = _workdir(tmp_path)
+    argv, _dirs, _env = translate(_spec(quant="fp32"), ds_root,
+                                  workdir / "runs" / JOB, writer=recorder)
+    i = argv.index("--accelerator.mixed_precision")
+    assert argv[i + 1] == "no"
+    assert "--policy.dtype" not in argv
 
 
 def test_translate_smoke_is_one_step(tmp_path, recorder):

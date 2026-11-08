@@ -45,6 +45,10 @@ def test_family_default_lr():
 
 
 def _spec(model: str, **kw) -> dict:
+    # the smolvla family's default precision is bf16 (bnb8 is an openvla-
+    # only profile — the spec validator's family gate rejects it).
+    if "smolvla" in model and "quant" not in kw:
+        kw["quant"] = "bf16"
     return build_job_spec(
         job_id="j_20261107_0001", student="s07",
         job_type=kw.pop("job_type", "train"),
