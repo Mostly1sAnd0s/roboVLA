@@ -1,0 +1,98 @@
+# robovla-runner-smolvla-cuda-pascal — the SmolVLA runner image for
+# Pascal silicon (GTX 1070, sm_61). A VARIANT, not a fleet default.
+#
+# Why this file exists: the cu128 wheels carry NO Pascal kernels, and
+# cu126 is the last cu12x family that ships them (probe 2026-11-08:
+# torch 2.9.1+cu126 arch list includes sm_50/sm_60; sm_60 SASS runs on
+# sm_61 by minor-version binary compatibility — matmul verified on the
+# 1070). Everything except the torch layer is identical to
+# Dockerfile.cuda-smolvla.
+#
+# HARD RULE: this image must NEVER float into the fleet default or the
+# openvla image. cu126 deliberately omits sm_120 (Blackwell) — the
+# campus 5090/node2 legs need cu128. Nodes run this image only where
+# fleet.yaml pins them (section 10 family-pin note; the 1070 is a
+# SmolVLA-only box: openvla-7b does not fit 8 GB).
+#
+# Precision: the 1070 has no bf16 math (hard "not implemented for
+# BFloat16"), and GeForce Pascal fp16 is crippled. Specs on this node
+# use quant=fp32 — the family-gated profile (core.spec.QUANT_FAMILIES);
+# the wrapper maps it to --accelerator.mixed_precision no. fleet.yaml
+# gpu.quant for a Pascal node is therefore fp32.
+#
+# Model source: offline volume, same rule as the base image — the
+# quadlet mounts the HF hub cache at /models (HF_HUB_CACHE=/models,
+# HF_HUB_OFFLINE=1 via node.env). The volume must hold BOTH
+# `lerobot/smolvla_base` AND its backbone
+# `HuggingFaceTB/SmolVLM2-500M-Video-Instruct`.
+#
+# Build (from the repo root):
+#   podman build -t robovla-runner-smolvla-cuda-pascal:2026.11.0 \
+#       -f images/Dockerfile.cuda-smolvla-pascal .
+#
+# Pin rule: the tag is UNTRUSTED until its first smoke passes on the
+# 1070 (new tag + verified smoke, same as every image here).
+
+FROM nvidia/cuda:12.6.3-cudnn-runtime-ubuntu24.04
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    UV_LINK_MODE=copy \
+    PATH="/opt/venv/bin:$PATH"
+
+# uv + Python 3.12 + the torchcodec link deps (the base image's ffmpeg
+# note applies verbatim — keep the belt).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates curl git ffmpeg \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && ln -s /root/.local/bin/uv /usr/local/bin/uv \
+    && uv python install 3.12 \
+    && uv venv --python 3.12 /opt/venv
+
+# torch + torchvision in ONE command against the cu126 index (the shared-
+# resolve pin trap, verbatim from the base image — install together or
+# the resolver floats torchvision off this CUDA family). 2.9.1 is the
+# probe-verified Pascal wheel; lerobot's torch range (>=2.7,<2.16)
+# accepts it.
+RUN uv pip install \
+        torch==2.9.1+cu126 torchvision==0.24.1+cu126 \
+            --index-url https://download.pytorch.org/whl/cu126
+
+# The pinned trainer (console script: /opt/venv/bin/lerobot-train).
+# Identical to the base image — lerobot resolves its own deps onto the
+# cu126 torch already in the venv (the torch pins above are not floated).
+RUN uv pip install "lerobot[smolvla,training]==0.7.0"
+
+# The wheel inputs (src/robovla + agent — the console AND agent packages;
+# the images package is NOT in the wheel, same rule as Dockerfile.cuda).
+COPY pyproject.toml README.md /opt/robovla/
+COPY src /opt/robovla/src
+COPY agent /opt/robovla/agent
+RUN uv pip install /opt/robovla
+
+# The images package (the wrapper + writer) AFTER the heavy layers, so a
+# source edit re-runs only this small COPY.
+COPY images /opt/robovla/images
+
+# The Trackio sink (images/trackio_sink.py ships under its ALIASED name):
+# the smolvla wrapper puts this dir FIRST on the child's PYTHONPATH so
+# `import trackio` resolves to the house sink (stdlib-only; the curve
+# lands in the job's standard metrics.jsonl — the agent poll / SSE /
+# sparkline consume it with no change; unknown attributes fail loud).
+COPY images/trackio_sink.py /opt/robovla/sink/trackio.py
+
+# Fixed-argv entrypoints (python scripts — never a shell). smolvla_job is
+# this image's family program; robovla_job ships too so the image can run
+# NOTHING ELSE on the openvla types (they fail fast against absent TF
+# pins, and openvla specs cannot validate onto an fp32 node anyway).
+COPY images/bin /opt/robovla/bin
+RUN chmod +x /opt/robovla/bin/smolvla_job /opt/robovla/bin/robovla_job
+
+# The agent owns the process lifecycle; :8601 is console-only traffic.
+# Host mounts (podman quadlet): <host workdir> -> /data, <model volume> ->
+# /models. ENTRYPOINT rule (host65 first boot): -m agent, NOT
+# -m agent.server (no __main__ guard there — silent exit).
+WORKDIR /data
+EXPOSE 8601
+ENTRYPOINT ["/opt/venv/bin/python", "-m", "agent"]

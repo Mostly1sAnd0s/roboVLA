@@ -33,6 +33,29 @@ from robovla.smolvla import SERVING_META_NAME, serving_meta_dict
 RAW_ACTION = [0.5, -0.25, 0.1]
 
 
+class _FakeTensor:
+    """The tensor slice the seam touches: as_tensor -> ndim guard ->
+    reshape -> .to(policy device) (the cuda shakeout, 2026-11-08: the
+    numpy state stayed on the CPU while the model sat on cuda:0)."""
+
+    def __init__(self, arr, device=None):
+        self.arr = np.asarray(arr, dtype=np.float32)
+        self.device = device
+
+    @property
+    def ndim(self):
+        return self.arr.ndim
+
+    def reshape(self, *shape):
+        return _FakeTensor(self.arr.reshape(shape), self.device)
+
+    def to(self, device):
+        return _FakeTensor(self.arr, device)
+
+    def tolist(self):
+        return self.arr.tolist()
+
+
 def _fake_torch():
     """The minimal torch surface SmolVlaModel.predict touches."""
     @contextmanager
@@ -40,7 +63,9 @@ def _fake_torch():
         yield
     return SimpleNamespace(inference_mode=inference_mode,
                            from_numpy=lambda a: a,
-                           asarray=lambda a: np.asarray(a))
+                           asarray=lambda a: np.asarray(a),
+                           float32=np.float32,
+                           as_tensor=lambda a, dtype=None: _FakeTensor(a))
 
 
 def _fake_bundle(action=RAW_ACTION):
@@ -52,6 +77,11 @@ def _fake_bundle(action=RAW_ACTION):
         return frame
 
     class _Policy:
+        # the seam reads next(policy.parameters()).device to place the
+        # state tensor (the real nn.Module surface)
+        def parameters(self):
+            yield SimpleNamespace(device="fakecuda:0")
+
         def select_action(self, batch):
             seen["batch"] = batch
             return np.array([[action]], dtype=np.float32)  # [1, 1, 3]
@@ -102,9 +132,13 @@ def test_predict_maps_raw_to_house_norm(tmp_path):
     assert img.shape == (3, 48, 64) and img.dtype == np.float32
     assert img.max() <= 1.0
     assert frame["task"] == "park at the cone"
-    # the state reaches the policy BATCHED (1,3) — the embed_prefix
-    # contract the real stack enforced on 2026-11-08
-    assert seen["batch"]["observation.state"].tolist() == [[0.0, 0.0, 0.0]]
+    # the state reaches the policy BATCHED (1,3) ON THE POLICY DEVICE —
+    # the embed_prefix + device contracts the real stack enforced on
+    # 2026-11-08 (cpu shape died on shape[1]; the numpy state died on
+    # cuda addmm)
+    st = seen["batch"]["observation.state"]
+    assert st.tolist() == [[0.0, 0.0, 0.0]]
+    assert st.device == "fakecuda:0"
 
 
 def test_predict_uses_the_stamped_dataset_stats(tmp_path):

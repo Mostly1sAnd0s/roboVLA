@@ -111,7 +111,14 @@ TRACKIO_PROJECT = "robovla-smolvla"
 #: Pascal/sm_61 profile (bf16 kernels do not exist there; fp16 math is
 #: crippled on GeForce Pascal). An unlisted quant is a loud validation
 #: error, never a silent bf16 default.
-MIXED_PRECISION = {"bf16": "bf16", "fp32": "no"}
+#:
+#: THE fp32 VALUE CARRIES YAML QUOTES ON PURPOSE (lerobot 0.7.0 cuda run,
+#: 2026-11-08): lerobot parses every CLI value through YAML, where a bare
+#: ``no`` decodes to the boolean False and AcceleratorConfig's
+#: ``mixed_precision: str`` field then dies with a draccus ParsingError.
+#: The argv element ``"no"`` (literal quote characters, fixed argv — no
+#: shell involved) decodes to the STRING "no". bf16 needs no quoting.
+MIXED_PRECISION = {"bf16": "bf16", "fp32": '"no"'}
 
 #: The scheduler shape around the house lr (SmolVLA base-config presets;
 #: lerobot auto-scales warmup/decay into runs shorter than decay steps).

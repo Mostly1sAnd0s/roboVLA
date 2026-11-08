@@ -199,13 +199,21 @@ class SmolVlaModel:
         }
         with torch.inference_mode():
             batch = preprocess(frame)
-            # the single-frame preprocess batches images + language but
-            # passes the state through UNBATCHED (probe, 2026-11-08:
-            # (3,) reaches embed_prefix and dies on shape[1]); the model
-            # contract is (B, state_dim) — batch it here, shape-guarded
+            # The single-frame preprocess batches images + language but
+            # passes the state through UNBATCHED and UNTOUCHED by the
+            # device processor (probes, 2026-11-08: shape (3,) reaches
+            # embed_prefix and dies on shape[1]; the cuda probe shows
+            # the numpy state stays on the CPU while the model lives on
+            # cuda:0 — addmm dies on the mixed devices). The model
+            # contract is a float32 (B, state_dim) TENSOR on the policy
+            # device — normalize tensor, shape, and device here.
             st = batch.get(SMOLVLA_STATE_KEY)
-            if getattr(st, "ndim", 2) == 1:
-                batch[SMOLVLA_STATE_KEY] = st.reshape((1, -1))
+            if st is not None:
+                st_t = torch.as_tensor(st, dtype=torch.float32)
+                if st_t.ndim == 1:
+                    st_t = st_t.reshape(1, -1)
+                batch[SMOLVLA_STATE_KEY] = st_t.to(
+                    next(policy.parameters()).device)
             action = postprocess(policy.select_action(batch))
         raw = [float(x) for x in torch.asarray(action).reshape(-1)[:3]]
         return list(to_house_action(raw, self._stats))

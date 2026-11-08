@@ -163,11 +163,19 @@ def test_translate_maps_fp32_to_no_mixed_precision(tmp_path, recorder):
     # Pascal (sm_61) has no bf16 math: an fp32 spec must train float32
     # end to end. lerobot's knob is --accelerator.mixed_precision no;
     # the wrapper never passes --policy.dtype (weights stay float32).
+    #
+    # The value MUST carry YAML quotes ("no"): lerobot parses CLI values
+    # through YAML, where a bare `no` decodes to the boolean False and
+    # AcceleratorConfig's `mixed_precision: str` field dies in draccus
+    # (pinned by the 2026-11-08 cuda run — do not "clean up" the quotes).
     workdir, ds_root = _workdir(tmp_path)
     argv, _dirs, _env = translate(_spec(quant="fp32"), ds_root,
                                   workdir / "runs" / JOB, writer=recorder)
     i = argv.index("--accelerator.mixed_precision")
-    assert argv[i + 1] == "no"
+    assert argv[i + 1] == '"no"'
+    import yaml
+    assert yaml.safe_load(argv[i + 1]) == "no"       # what lerobot sees
+    assert yaml.safe_load("no") is False             # the trap, pinned
     assert "--policy.dtype" not in argv
 
 
