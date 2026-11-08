@@ -485,6 +485,32 @@ def test_samples_loads_dataset_layout(tmp_path):
     assert stats.min == (-1.0,) * 7 and stats.max == (1.0,) * 7
 
 
+def test_samples_loads_canonical_frames_subdir(tmp_path):
+    """The UPLOAD layout (episodes/ep_*/frames/*.jpg — the zip convention,
+    QA, and the bundle) must load in the engine, not just the flat
+    selftest layout. The first console-uploaded dataset hit this on the
+    real node (2026-11-08 pilot): upload QA accepted frames/, the engine
+    only globbed flat frame_*.jpg and failed 'episode has no frames'."""
+    from PIL import Image
+    ds = tmp_path / "datasets" / "s01__x__v1"
+    for ep in range(1, 3):
+        d = ds / "episodes" / f"ep_{ep:04d}"
+        (d / "frames").mkdir(parents=True)
+        (d / "episode.json").write_text(json.dumps({"id": f"ep_{ep:04d}", "task": "t"}))
+        (d / "actions.json").write_text(json.dumps(
+            [{"t": i * 0.1, "vx": 0.1, "vy": 0.0, "wz": 0.0} for i in range(3)]))
+        for i in range(3):
+            Image.new("RGB", (64, 48), (ep, i, 0)).save(
+                d / "frames" / f"frame_{i:03d}.jpg", "JPEG")
+    (ds / "norm_stats.json").write_text(json.dumps(
+        {"min": [-1.0] * 7, "max": [1.0] * 7}))
+    train, held, _ = engine._samples(ds, {"student": "s00", "dataset": "s01/x/v1",
+                                          "prompt_template": "p {task} "})
+    assert len(train) + len(held) == 6
+    for _f, _p, _n, _t in train + held:
+        assert "/frames/" in _f
+
+
 def test_samples_requires_norm_stats(tmp_path):
     ds = _real_dataset(tmp_path)
     (ds / "norm_stats.json").unlink()

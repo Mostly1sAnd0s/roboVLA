@@ -229,6 +229,22 @@ def safe_extract_zip(blob: bytes, dest: Path) -> list[Path]:
 # --- episode tree (seam: bytes -> shared Episode objects) ------------------------
 
 
+def frame_files(ep_dir: Path) -> list[Path]:
+    """The frame image files of one episode, in capture order.
+
+    The canonical layout is ``ep_*/frames/*.jpg`` (upload zip convention,
+    QA, bundle). The engine historically also read the flat
+    ``ep_*/frame_*.jpg`` layout written by scripts/make_selftest_dataset
+    (node-local self-tests) — accepted as a fallback so both trees load,
+    ONE listing site (the frame_count in :func:`load_episode` uses it).
+    """
+    sub = ep_dir / "frames"
+    if sub.is_dir():
+        return sorted(p for p in sub.iterdir()
+                      if p.suffix.lower() in (".jpg", ".jpeg"))
+    return sorted(ep_dir.glob("frame_*.jpg"))
+
+
 def load_episode(ep_dir: Path) -> Episode:
     """Parse one episode folder into the shared :class:`Episode` (pure core
     types). Frame *reading* stays here; all rules are core's."""
@@ -244,8 +260,7 @@ def load_episode(ep_dir: Path) -> Episode:
         )
         for a in raw
     )
-    frames = ep_dir / "frames"
-    frame_count = len(list(frames.glob("*.jpg")) + list(frames.glob("*.jpeg"))) if frames.is_dir() else 0
+    frame_count = len(frame_files(ep_dir))
     return Episode(
         id=str(meta.get("id", ep_dir.name)),
         frame_count=frame_count,

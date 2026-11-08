@@ -142,7 +142,7 @@ def _episodes_raw(ds_root: Path):
     """(episode_id, task, [frame_paths], [7d actions]) from episodes/ep_*/."""
     # load_episode is the FILE SEAM (fs) — it parses episode.json/actions.json
     # and counts frames/; the pure core (robovla.episode) carries no I/O.
-    from robovla.fs import load_episode
+    from robovla.fs import frame_files, load_episode
 
     root = ds_root / "episodes"
     if not root.is_dir():
@@ -152,7 +152,7 @@ def _episodes_raw(ds_root: Path):
         if not d.is_dir():
             continue
         ep = load_episode(d)
-        frames = [str(f) for f in sorted(d.glob("frame_*.jpg"))]
+        frames = [str(f) for f in frame_files(d)]  # frames/ subdir or flat legacy
         if not frames:
             raise RobovlaError("dataset_not_ready", f"episode {ep.id} has no frames")
         out.append((ep.id, ep.task, frames, [to_action_7d(a) for a in ep.actions]))
