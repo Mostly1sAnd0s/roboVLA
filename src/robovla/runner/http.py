@@ -30,7 +30,11 @@ _CODE_BY_STATUS = {
 }
 
 DEFAULT_TIMEOUT_S = 10.0
-PREDICT_TIMEOUT_S = 5.0  # robot steps are latency-sensitive (§9.5: p95 < 400 ms target)
+# Robot steps are latency-sensitive (§9.5: p95 < 400 ms target), but the
+# FIRST step after a claim can block behind the slot's cold model load
+# (the agent warms it at /serve; predict waits on the same lock). The
+# budget covers the load (~40 s fp32 on the pilot GPU), not the step.
+PREDICT_TIMEOUT_S = 120.0
 
 
 class HttpRunner:

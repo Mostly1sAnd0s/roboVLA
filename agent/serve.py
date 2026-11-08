@@ -272,8 +272,37 @@ class SlotServing:
             self._slots[handle] = {
                 "run_id": run_id, "adapter": adapter, "model": model,
                 "lock": threading.Lock(), "created_at": time.time(),
+                "loading": True,
             }
-        self._log(f"[serve] {handle}: run={run_id} adapter={adapter}")
+        # Warm the model NOW, in the background: the factory is lazy (both
+        # families), and the console's /serve request has a 10 s budget --
+        # a cold load (tens of seconds: base checkpoint + fp32 adapter)
+        # must not ride the first robot step, where the console predict
+        # timeout would kill it (pilot 2026-11-08: first predict after a
+        # claim 503'd; the retry hit an already-warm slot and passed). A
+        # load failure here is logged, not raised (the same failure
+        # surfaces on the next predict, where the console sees it).
+        ensure = getattr(model, "_ensure_loaded", None)
+        if ensure is None:
+            with self._lock:
+                self._slots[handle]["loading"] = False
+            self._log(f"[serve] {handle}: run={run_id} adapter={adapter}")
+            return handle
+
+        def _warm() -> None:
+            try:
+                ensure()
+                self._log(f"[serve] {handle}: model warm")
+            except Exception as e:  # noqa: BLE001 - predict re-raises
+                self._log(f"[serve] {handle}: warm failed ({e}); "
+                          f"predict will surface it")
+            finally:
+                with self._lock:
+                    if handle in self._slots:
+                        self._slots[handle]["loading"] = False
+        threading.Thread(target=_warm, name=f"slot-warm-{handle}",
+                         daemon=True).start()
+        self._log(f"[serve] {handle}: run={run_id} adapter={adapter} (warming)")
         return handle
 
     def release(self, handle: str) -> None:

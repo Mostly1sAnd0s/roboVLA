@@ -319,3 +319,70 @@ def test_make_agent_app_wires_from_config(tmp_path):
     # wrong token is rejected on the production app too
     c2 = TestClient(app)
     assert c2.get("/health").status_code == 401
+
+
+# -- warm-on-serve (pilot 2026-11-08: the first robot step must not pay
+#    the cold load; the console's predict budget would kill it) ----------
+
+
+class _LazyModel:
+    """Loads only when asked (like both real families); the warm thread
+    must be the one to ask at serve time."""
+
+    def __init__(self):
+        self.loaded = False
+        self.unloaded = False
+
+    def _ensure_loaded(self):
+        time.sleep(0.05)
+        self.loaded = True
+
+    def predict(self, image_b64, prompt):
+        assert self.loaded  # predict never races an unloaded model
+        return [0.1] * 7
+
+    def unload(self):
+        self.unloaded = True
+
+
+def _wait(predicate, timeout=2.0):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+def test_serve_warms_the_model_in_background():
+    model = _LazyModel()
+    log = LogBuffer() if "LogBuffer" in dir() else None
+    try:
+        serving = SlotServing(lambda r, a: model, log=lambda m: None)
+    except TypeError:
+        serving = SlotServing(lambda r, a: model)
+    handle = serving.serve("j_1", "runs/j_1/ckpt")
+    # serve returned BEFORE the load finished (the 10 s serve budget is why
+    # the load is a thread) but the model is warm without any predict call
+    assert _wait(lambda: model.loaded), "serve did not warm the model"
+    assert serving.predict(handle, "aW1hZ2U=", "go")["action_norm"] == [0.1] * 7
+
+
+def test_warm_failure_does_not_break_serve():
+    class Boom(_LazyModel):
+        def _ensure_loaded(self):
+            raise RuntimeError("CUDA out of memory")
+
+        def predict(self, image_b64, prompt):
+            self._ensure_loaded()  # real models ensure-then-predict
+            return [0.1] * 7
+
+    model = Boom()
+    log: list[str] = []
+    serving = SlotServing(lambda r, a: model, log=log.append)
+    handle = serving.serve("j_1", "runs/j_1/ckpt")  # must NOT raise
+    # the warm failure is logged, and the slot stays usable for the
+    # predict that surfaces the error
+    assert _wait(lambda: any("warm failed" in m for m in log))
+    with pytest.raises(RuntimeError, match="out of memory"):
+        serving.predict(handle, "aW1hZ2U=", "go")
