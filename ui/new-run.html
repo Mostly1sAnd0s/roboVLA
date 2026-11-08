@@ -75,7 +75,7 @@ $("#ds").innerHTML = datasets
 // node options: auto + student-selectable (teacher: any enabled)
 const nodes = h.nodes.filter(n => n.enabled && (isTeacher || n.student_selectable));
 $("#node").innerHTML += nodes
-  .map(n => `<option value="${esc(n.id)}">${esc(n.label ?? n.id)} (${n.vram_gb} GB)</option>`)
+  .map(n => `<option value="${esc(n.id)}">${esc(n.label ?? n.id)} (${n.vram_gb} GB, ${esc((n.model || "").split("/").pop())})</option>`)
   .join("");
 
 // batch options: the selected node's presets (auto: union of all enabled nodes)

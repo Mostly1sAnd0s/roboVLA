@@ -25,7 +25,7 @@ from typing import Any, Sequence
 from .budgets import INFER_JOB_TYPES
 from .config import NodeConfig
 from .errors import RobovlaError
-from .spec import JOB_TYPES
+from .spec import JOB_TYPES, model_family
 from .states import apply_transition
 
 #: Display heuristics for ``eta_s`` / the dashboard (§7): base durations.
@@ -89,6 +89,12 @@ class Job:
     est_duration_s: float
     state: str = "queued"
     node_id: str | None = None
+    #: model family ("openvla" | "smolvla", derived from the spec's model
+    #: id). Placement affinity: a job is only admitted on a node whose
+    #: pinned model shares the family — the node image runs one family, so
+    #: VRAM fit alone must not place across it (§10, §11). Empty = the
+    #: openvla default (restored pre-family rows keep working).
+    family: str = ""
 
 
 @dataclass(frozen=True)
@@ -232,6 +238,11 @@ class Scheduler:
     def _targets_node(self, j: Job, node_id: str) -> bool:
         return j.target_node is None or j.target_node == node_id
 
+    def _node_family_ok(self, j: Job, node: NodeConfig) -> bool:
+        """Family affinity: the node's pinned model must share the job's
+        family (empty job family = openvla, the pre-family default)."""
+        return (j.family or "openvla") == model_family(node.model)
+
     def _running_jobs(self, node_id: str, cls: str) -> list[Job]:
         return [
             j
@@ -261,7 +272,8 @@ class Scheduler:
             free_vram = view.free_vram_gb
             free = {"train": self._free_slots(node, "train"), "infer": self._free_slots(node, "infer")}
             candidates = sorted(
-                (j for jid in self._order if (j := self._jobs[jid]).state == "queued" and self._targets_node(j, node.id)),
+                (j for jid in self._order if (j := self._jobs[jid]).state == "queued"
+                 and self._targets_node(j, node.id) and self._node_family_ok(j, node)),
                 key=self._queue_key,
             )
             for j in candidates:
@@ -288,6 +300,8 @@ class Scheduler:
         for node in self._by_priority():
             if not self._targets_node(job, node.id) or not node.enabled:
                 continue
+            if not self._node_family_ok(job, node):
+                continue  # the node's image runs the other family (§10)
             view = node_states.get(node.id)
             if view is None or not view.online:
                 continue
@@ -312,6 +326,11 @@ class Scheduler:
         )
         blockers: list[dict[str, Any]] = []
         for node in eligible:
+            if not self._node_family_ok(job, node):
+                # a fleet edit can repin a node's model under a queued job;
+                # say so instead of a misleading busy/budget
+                blockers.append({"node": node.id, "reason": "family"})
+                continue
             if not node.enabled:
                 blockers.append({"node": node.id, "reason": "disabled"})
                 continue
@@ -344,12 +363,15 @@ class Scheduler:
         for node in self._by_priority():
             if job.target_node is not None and node.id != job.target_node:
                 continue
+            if not self._node_family_ok(job, node):
+                continue
             ahead = sum(
                 1
                 for j in self._jobs.values()
                 if j.state == "queued"
                 and j.job_id != job_id
                 and self._targets_node(j, node.id)
+                and self._node_family_ok(j, node)
                 and self._queue_key(j) < self._queue_key(job)
             )
             pos = ahead + 1
@@ -372,7 +394,7 @@ class Scheduler:
         for node in self._by_priority():
             if job.target_node is not None and node.id != job.target_node:
                 continue
-            if not node.enabled:
+            if not node.enabled or not self._node_family_ok(job, node):
                 continue
             view = node_states.get(node.id)
             if view is None or not view.online or view.free_vram_gb < job.budget_gb:
@@ -384,6 +406,7 @@ class Scheduler:
                 if j.state == "queued"
                 and j.job_id != job_id
                 and self._targets_node(j, node.id)
+                and self._node_family_ok(j, node)
                 and self._queue_key(j) < self._queue_key(job)
             )
             candidate = wait + job.est_duration_s

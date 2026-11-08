@@ -145,7 +145,7 @@ async def add_node(request: Request, user: dict = Depends(require_admin)) -> dic
 def _node_raw_default(nid: str, body: dict) -> dict:
     gpu = body.get("gpu", {})
     budgets = gpu.get("budgets", {})
-    return {
+    raw = {
         "id": nid, "label": body.get("label", nid),
         "image": body.get("image", "robovla-runner-cuda:2026.10"),
         "workdir": body.get("workdir", "/home/adam/robovla"),
@@ -163,6 +163,9 @@ def _node_raw_default(nid: str, body: dict) -> dict:
         "student_selectable": bool(body.get("student_selectable", False)),
         "enabled": bool(body.get("enabled", False)),
     }
+    if body.get("model"):  # §10 pin (omit for the openvla default)
+        raw["model"] = str(body["model"])
+    return raw
 
 
 @router.patch("/nodes/{nid}")

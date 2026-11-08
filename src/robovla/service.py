@@ -33,7 +33,7 @@ from .core.errors import RobovlaError
 from .core.norm_stats import NormStats
 from .core.scheduler import Job, NodeState, Scheduler, default_duration_s
 from .core.states import is_terminal
-from .core.spec import validate_job_spec
+from .core.spec import model_family, validate_job_spec
 from .core.ticket import Ticket, on_run_terminal
 from .ratelimit import RateLimiter
 from .runner import Runner
@@ -137,6 +137,7 @@ class ConsoleService:
                 est_duration_s=self.estimate(spec),
                 state=row["state"],
                 node_id=row["node_id"],
+                family=model_family(spec.get("model", "")),
             ))
         return s
 
@@ -420,13 +421,20 @@ class ConsoleService:
                                node.gpu.quant, job_type, batch, max_batch)
 
     def budget_for(self, job_type: str, batch: int | None,
-                   node: NodeConfig | None = None) -> float:
+                   node: NodeConfig | None = None, family: str | None = None) -> float:
         """Admission budget (§3): node-specific, or the conservative max
-        across enabled nodes for auto selection."""
+        across enabled nodes for auto selection.
+
+        ``family`` (the job's model family) restricts the max to nodes whose
+        pinned model shares it: a 4 GB SmolVLA job must not inherit the
+        openvla node's budget and price itself out of its own 7 GB node
+        (the family placement rule of §10, seen from the budget side)."""
         if node is not None:
             return self.estimate_on(job_type, batch, node)
-        return max((self.estimate_on(job_type, batch, n)
-                    for n in self.enabled_nodes_priority()), default=0.0)
+        nodes = self.enabled_nodes_priority()
+        if family is not None:
+            nodes = [n for n in nodes if model_family(n.model) == family]
+        return max((self.estimate_on(job_type, batch, n) for n in nodes), default=0.0)
 
     def new_job_id(self) -> str:
         day = self.clock()[:10].replace("-", "")

@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from robovla.core.config import (
+    DEFAULT_MODEL,
     FLEET_VERSION,
     NODE_ID_RE,
     Change,
@@ -112,6 +113,20 @@ def _fleet():
 
 
 class TestParse:
+    def test_node_model_pin(self):
+        # a node may pin its base model (the SmolVLA pilot: fp32 Pascal
+        # nodes run lerobot/smolvla_base). Default: the openvla catalog.
+        f = copy.deepcopy(FLEET)
+        f["nodes"][0]["model"] = "lerobot/smolvla_base"
+        n = validate_fleet(f).nodes_by_id()["pai1"]
+        assert n.model == "lerobot/smolvla_base"
+        n0 = validate_fleet(copy.deepcopy(FLEET)).nodes_by_id()["pai1"]
+        assert n0.model == DEFAULT_MODEL
+        bad = copy.deepcopy(FLEET)
+        bad["nodes"][0]["model"] = "x" * 201
+        with pytest.raises(RobovlaError):
+            validate_fleet(bad)
+
     def test_shipped_default_fleet(self):
         f = _fleet()
         assert f.version == FLEET_VERSION == 1

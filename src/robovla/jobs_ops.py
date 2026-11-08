@@ -11,7 +11,8 @@ from typing import Any
 
 from .core.errors import RobovlaError
 from .core.scheduler import Job
-from .core.spec import build_job_spec, validate_job_spec
+from .core.spec import (MODEL_CATALOG, QUANT_FAMILIES, build_job_spec,
+                        model_family, validate_job_spec)
 from .core.norm_stats import denormalize
 from .service import LEASE_S, ConsoleService, _dt, norm_stats_obj
 
@@ -95,15 +96,34 @@ def submit_run(svc: ConsoleService, user: dict[str, Any], payload: dict[str, Any
     first = svc.enabled_nodes_priority()
     if not first:
         raise RobovlaError("conflict", "no enabled nodes in the fleet")
+    # Model resolution (§11): each node pins a base model in fleet.yaml;
+    # an explicit submit override must stay inside the catalog. Auto
+    # placement only considers nodes whose quant profile is a profile of
+    # the model's family — the family gate that the spec validator applies
+    # at the node, applied to placement so a family-matched node is chosen
+    # instead of a guaranteed dispatch failure.
+    model = cfg.get("model")
+    if model is not None:
+        if not isinstance(model, str) or model not in MODEL_CATALOG:
+            raise RobovlaError("validation",
+                               "model must be one of: " + ", ".join(sorted(MODEL_CATALOG)))
+        eligible = [n for n in first
+                    if model_family(model) in QUANT_FAMILIES[n.gpu.quant]]
+        if not eligible:
+            raise RobovlaError("validation",
+                               f"no enabled node can run {model} (family/quant mismatch)")
+    else:
+        eligible = first
     pinned = svc.fleet_node(node_id) if node_id != "auto" else None
-    anchor = pinned or first[0]  # display node until dispatch finalizes (§3)
-    budget = svc.budget_for(job_type, batch, pinned)
+    anchor = pinned or eligible[0]  # display node until dispatch finalizes (§3)
+    model = model or anchor.model
+    budget = svc.budget_for(job_type, batch, pinned, family=model_family(model))
     max_min = min(int(cfg.get("max_run_min", limits["max_run_min"])), limits["max_run_min"])
     overrides = {k: cfg[k] for k in _OVERRIDABLE if k in cfg}
     job_id = svc.new_job_id()
     spec = build_job_spec(
         job_id=job_id, student=user["user_id"], job_type=job_type,
-        dataset=ds["dataset_id"], node_id=anchor.id,
+        dataset=ds["dataset_id"], node_id=anchor.id, model=model,
         node_agent=f"{anchor.agent.lan_ip}:{anchor.agent.port}",
         budget_gb=budget, batch=batch, quant=anchor.gpu.quant,
         overrides=overrides, max_min=max_min, idempotency_key=idempotency_key,
@@ -116,7 +136,8 @@ def submit_run(svc: ConsoleService, user: dict[str, Any], payload: dict[str, Any
         job_id=job_id, student=user["user_id"], job_type=job_type,
         target_node=node_id if node_id != "auto" else None,
         run_now=run_now, submitted_at=svc._monotonic(), budget_gb=budget,
-        est_duration_s=svc.estimate(spec.to_dict())))
+        est_duration_s=svc.estimate(spec.to_dict()),
+        family=model_family(model)))
     if job_type == "train" and ticket_id:
         t = svc.storage.get_ticket(ticket_id)
         svc.storage.save_ticket({**t, "linked_job": job_id, "state": "linked",
@@ -259,7 +280,7 @@ def claim_slot(svc: ConsoleService, user: dict[str, Any], run_id: str) -> dict[s
     if counts["running"] >= limits["max_running"]:
         raise RobovlaError("limit_exceeded",
                            "max running reached (an active inference slot counts)")
-    budget = svc.budget_for("infer", None)
+    budget = svc.budget_for("infer", None, family=model_family(row["spec"]["model"]))
     job_id = svc.new_job_id()
     spec = dict(row["spec"])
     spec["job_id"] = job_id  # the infer job IS a new job id (not the run's)
@@ -271,7 +292,8 @@ def claim_slot(svc: ConsoleService, user: dict[str, Any], run_id: str) -> dict[s
     svc.scheduler.add(Job(job_id=job_id, student=user["user_id"], job_type="infer",
                           target_node=None, run_now=False,
                           submitted_at=svc._monotonic(), budget_gb=budget,
-                          est_duration_s=0.0))
+                          est_duration_s=0.0,
+                          family=model_family(spec.model)))
     svc.audit(user["user_id"], "slot.claim", job_id, None, {"run_id": run_id})
     svc.bus.publish("class", "slots", {"job_id": job_id, "event": "claimed",
                                        "student": user["user_id"]})

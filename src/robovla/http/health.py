@@ -30,8 +30,10 @@ async def health(request: Request) -> dict:
              "vram_gb": n.gpu.vram_gb,
              "queue_depth": depth.get(n.id, 0),
              # fleet config (not secret) — the new-run form filters node +
-             # batch options with these (§7.3, §8.2)
+             # batch options with these (§7.3, §8.2); ``model`` is the
+             # node's pinned base model (§10)
              "student_selectable": n.student_selectable,
+             "model": n.model,
              "batch_presets": list(n.presets.batch)}
             for n in s.fleet.nodes
         ],

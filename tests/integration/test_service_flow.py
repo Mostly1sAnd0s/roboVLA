@@ -74,6 +74,42 @@ def test_train_requires_ticket_400_and_409(env):
     assert jid1.startswith("j_")
 
 
+def test_node_pinned_model_flows_into_the_spec(env):
+    """The fleet node's ``model`` pin lands in the spec (family lr, quant
+    fp32 from the node). The spec validator's family gate is the placement
+    rule: pinning an openvla spec onto the fp32 smolvla node is a submit
+    failure, and the smolvla model on the bnb8 node likewise."""
+    env.as_student("s01")
+    ds = env.upload_ready("s01")
+    r = env.client.post("/api/runs", json={
+        "dataset_id": ds, "job_type": "smoke", "node_id": "smolvla1",
+        "config": {"batch": 1}})
+    assert r.status_code == 200, r.text
+    jid = r.json()["job_id"]
+    spec = env.svc.storage.get_job(jid)["spec"]
+    assert spec["model"] == "lerobot/smolvla_base"
+    assert spec["quant"] == "fp32"
+    assert spec["optim"]["lr"] == 1e-4  # the family preset, not 5e-4
+    # the openvla default onto the fp32 node: rejected (family gate)
+    r = env.client.post("/api/runs", json={
+        "dataset_id": ds, "job_type": "smoke", "node_id": "testnode",
+        "config": {"batch": 1, "model": "lerobot/smolvla_base"}})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "validation"
+
+
+def test_model_override_rejects_unknown_ids(env):
+    env.as_student("s01")
+    ds = env.upload_ready("s01")
+    # the override is catalog-gated: model ids flow into the wrapper argv
+    # (--policy.path) — free-text hub ids must never ride the command line
+    r = env.client.post("/api/runs", json={
+        "dataset_id": ds, "job_type": "smoke", "node_id": "smolvla1",
+        "config": {"batch": 1, "model": "evil/undownloadable"}})
+    assert r.status_code == 400
+    assert r.json()["error"]["code"] == "validation"
+
+
 def test_submit_run_and_drive_to_done_via_sse(env):
     env.as_student("s01")
     ds = env.upload_ready("s01")

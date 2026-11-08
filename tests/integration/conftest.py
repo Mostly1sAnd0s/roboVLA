@@ -56,6 +56,18 @@ nodes:
     priority: 0
     student_selectable: true
     enabled: true
+  - id: smolvla1
+    label: "pilot Pascal box (SmolVLA)"
+    image: robovla-runner-smolvla-cuda-pascal:2026.11.0
+    model: lerobot/smolvla_base
+    workdir: /tmp/w2
+    agent: {lan_ip: "10.0.0.11", port: 8601, token_ref: smolvla1-agent}
+    gpu: {vram_gb: 8, quant: fp32, train_slots: 1, infer_slots: 1,
+          budgets: {train_gb: 7, infer_gb: 4}}
+    presets: {batch: [1]}
+    priority: -5
+    student_selectable: true
+    enabled: true
 """
 
 
@@ -86,7 +98,8 @@ class Env:
         self.storage = Storage(tmp / "state.db")
         self.runner = FakeRunner(free_gb=free_gb)
         self.svc = ConsoleService(
-            tmp, self.fleet, self.storage, {NODE: self.runner},
+            tmp, self.fleet, self.storage,
+            {NODE: self.runner, "smolvla1": FakeRunner(free_gb=7.0)},
             clock=lambda: "2026-10-21T09:00:00Z", tick_s=0.01)
         self.app = create_app(self.svc, ui_dir=ui_dir)
         self.client = TestClient(self.app)

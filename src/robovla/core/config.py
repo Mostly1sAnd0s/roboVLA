@@ -30,6 +30,10 @@ FLEET_VERSION = 1
 #: Node id format — also referenced by JobSpec.node.id (one pattern, DRY).
 NODE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
+#: The fleet's base model unless a node pins another (``model:``). Lives
+#: here (not in spec) because NodeConfig defaults to it; spec re-exports.
+DEFAULT_MODEL = "openvla/openvla-7b"
+
 _ADMIN_RATE_RE = re.compile(r"^(\d+)/min$")
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
 _BATCH_OPTIONS = (1, 4, 8)  # §3: allowed batch (1 / 4 / 8 with matching grad-accum)
@@ -39,9 +43,11 @@ def _fail(message: str) -> None:
     raise RobovlaError("validation", message)
 
 
-def _str(value: Any, path: str) -> str:
+def _str(value: Any, path: str, *, max_len: int | None = None) -> str:
     if not isinstance(value, str) or not value:
         _fail(f"{path}: must be a non-empty string")
+    if max_len is not None and len(value) > max_len:
+        _fail(f"{path}: must be at most {max_len} characters")
     return value
 
 
@@ -130,6 +136,10 @@ class NodeConfig:
     priority: int
     student_selectable: bool
     enabled: bool
+    #: base model this node runs (the §10 pin: the image and quant profile
+    #: pick the family; jobs on this node spec this model unless the submit
+    #: overrides it within the catalog). Default: the openvla catalog entry.
+    model: str = DEFAULT_MODEL
 
 
 @dataclass(frozen=True)
@@ -272,6 +282,7 @@ def _node(d: Any, path: str) -> NodeConfig:
         priority=_int(d["priority"], f"{path}.priority", lo=-100, hi=100),
         student_selectable=_bool(d.get("student_selectable", False), f"{path}.student_selectable"),
         enabled=_bool(d.get("enabled", False), f"{path}.enabled"),
+        model=_str(d.get("model", DEFAULT_MODEL), f"{path}.model", max_len=200),
     )
 
 
@@ -373,7 +384,8 @@ def parse_fleet(text: str) -> FleetConfig:
 # --- diff (audit feed for hot reload / admin edits) -----------------------------
 
 _CONSOLE_LEAF = "console"
-_NODE_SCOPES = ("label", "image", "workdir", "priority", "student_selectable", "enabled")
+_NODE_SCOPES = ("label", "image", "model", "workdir", "priority",
+                "student_selectable", "enabled")
 
 
 def _diff_nodes(old: FleetConfig, new: FleetConfig) -> list[Change]:

@@ -7,6 +7,7 @@ the service seam dispatches via the runner and applies the resulting
 """
 
 import pytest
+from dataclasses import replace
 
 from robovla.core.budgets import estimate_job_gb
 from robovla.core.config import (
@@ -74,6 +75,7 @@ def _job(
     at=100.0,
     budget=11.0,
     dur=3600.0,
+    family="openvla",
 ):
     return Job(
         job_id=jid,
@@ -84,11 +86,59 @@ def _job(
         submitted_at=at,
         budget_gb=budget,
         est_duration_s=dur,
+        family=family,
     )
 
 
 B1 = estimate_job_gb(18.0, 11.0, "bnb8", "train", 1, 8)  # 11 GB batch-1 job
 B8 = estimate_job_gb(18.0, 11.0, "bnb8", "train", 8, 8)  # 18 GB full-batch job
+
+
+def _smol_node(nid="smolA", priority=0, vram=8.0, train_gb=7.0, infer_gb=4.0,
+               batch=(1,)):
+    """A SmolVLA-family node (the §10 pin: model + quant + image agree)."""
+    return _node(nid=nid, priority=priority, vram=vram, train_gb=train_gb,
+                 infer_gb=infer_gb, batch=batch)
+
+
+class TestFamilyPlacement:
+    """A job runs only on nodes whose pinned model shares its family (the
+    image decides what can run; §10, §11). Auto placement skips
+    family-mismatched nodes; a pinned wrong-family submit is the spec
+    validator's job (tested in the integration suite)."""
+
+    def test_auto_skips_mismatched_family(self):
+        a = _node(priority=10)  # bnb8/openvla, plenty of VRAM
+        b = _smol_node("smolZ", priority=-5)
+        b = replace(b, model="lerobot/smolvla_base", gpu=replace(b.gpu, quant="fp32"))
+        s = Scheduler([a, b])
+        s.add(_job(jid="j_1", family="smolvla", budget=4.0))
+        admitted = s.tick(_states(nodeA=(True, 30.0), smolZ=(True, 7.0)))
+        # admitted on the smolvla node ONLY (the openvla node fits by VRAM
+        # but cannot run the image)
+        assert [j.job_id for j in admitted] == ["j_1"]
+        assert s.admission_node("j_1", _states(nodeA=(True, 30.0),
+                                               smolZ=(True, 7.0))) in (None, "smolZ")
+
+    def test_openvla_never_admits_on_smolvla_node(self):
+        b = _smol_node("smolZ")
+        b = replace(b, model="lerobot/smolvla_base", gpu=replace(b.gpu, quant="fp32"))
+        s = Scheduler([b])
+        s.add(_job(jid="j_1", family="openvla", budget=4.0))
+        assert s.tick(_states(smolZ=(True, 7.0))) == []
+        assert s.position("j_1", _states(smolZ=(True, 7.0))) == 0  # no node
+
+    def test_position_counts_only_family_nodes(self):
+        a = _node()
+        b = _smol_node("smolZ")
+        b = replace(b, model="lerobot/smolvla_base", gpu=replace(b.gpu, quant="fp32"))
+        s = Scheduler([a, b])
+        s.add(_job(jid="j_a1", at=100.0))
+        s.add(_job(jid="j_s1", at=50.0, family="smolvla", budget=4.0))
+        # the smolvla job is earlier but runs on its own node: position 1
+        # (the openvla job ahead does NOT queue it behind on nodeA)
+        assert s.position("j_s1", _states(nodeA=(True, 30.0),
+                                          smolZ=(True, 7.0))) == 1
 
 
 class TestFifoAndRunNow:

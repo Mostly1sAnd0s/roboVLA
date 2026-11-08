@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .budgets import INFER_JOB_TYPES, QUANT_PROFILES, TRAIN_JOB_TYPES
-from .config import NODE_ID_RE
+from .config import DEFAULT_MODEL, NODE_ID_RE
 from .errors import RobovlaError
 
 # --- the catalog -----------------------------------------------------------
@@ -40,7 +40,8 @@ BF16_BATCHES = (1, 2, 4, 8)
 #: node max batch 1 => grad_accum 8; 4 => 2; 8 => 1 (setup doc §2).
 RECIPE_EFFECTIVE_BATCH = 8
 
-DEFAULT_MODEL = "openvla/openvla-7b"
+# DEFAULT_MODEL is defined in config (NodeConfig defaults to it) and
+# re-exported here for the historical import site.
 DEFAULT_PROMPT_TEMPLATE = "In: What action should the robot take to {task}?\nOut:"
 DEFAULT_LR = 5e-4
 
@@ -53,6 +54,16 @@ DEFAULT_LR = 5e-4
 #: the serving factory (§11 DRY).
 MODEL_FAMILY_OPENVLA = "openvla"
 MODEL_FAMILY_SMOLVLA = "smolvla"
+
+#: The closed model catalog: submit-time ``model`` overrides must be one of
+#: these. Model ids flow into the wrapper argv (--policy.path) and the
+#: offline model volume — a free-text id could only ever name a repo that
+#: is not there, so a typo costs a dispatch failure; gating the catalog
+#: turns it into a submit failure the student sees. Nodes pin their own
+#: model in fleet.yaml (§10); the pin need not be in this catalog (an
+#: operator may point a node at a local fine-tune), but a student
+#: override may not leave it.
+MODEL_CATALOG = frozenset({DEFAULT_MODEL, "lerobot/smolvla_base"})
 
 #: Per-family catalog learning rate (the openvla QLoRA recipe is 5e-4;
 #: the SmolVLA paper's fine-tune preset is 1e-4 — the base config's own
