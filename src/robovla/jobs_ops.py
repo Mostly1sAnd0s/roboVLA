@@ -7,6 +7,7 @@ predict proxy. Thin functions over service + core; all validation errors are
 from __future__ import annotations
 
 import asyncio
+import base64
 from typing import Any
 
 from .core.errors import RobovlaError
@@ -324,14 +325,10 @@ def slot_board(svc: ConsoleService) -> list[dict[str, Any]]:
     return out
 
 
-def robot_predict(svc: ConsoleService, user: dict[str, Any], image_b64: str,
-                  prompt: str) -> dict[str, Any]:
-    """The ONLY robot-facing path (§9.5): token + active-slot lease check,
-    proxy to the node agent, un-normalize with the dataset's stats."""
-    if not image_b64:
-        raise RobovlaError("validation", "image (base64) is required")
-    if not prompt:
-        raise RobovlaError("validation", "prompt is required")
+def active_infer_slot(svc: ConsoleService, user: dict[str, Any]) -> dict[str, Any]:
+    """The robot path's shared gate (§9.5): this token's student must hold
+    a running infer slot, lease unexpired (expiry releases the slot, so
+    the next claim is clean)."""
     mine = [j for j in svc.storage.list_jobs(state_in=("running",))
             if j["spec"]["type"] == "infer"
             and j["spec"]["student"] == user["user_id"] and j.get("slot_handle")]
@@ -345,6 +342,59 @@ def robot_predict(svc: ConsoleService, user: dict[str, Any], image_b64: str,
             row = svc.storage.get_job(job["job_id"])
             svc._release_infer_job(row)
             raise RobovlaError("conflict", "slot lease expired (idle > 300 s)")
+    return job
+
+
+def robot_telemetry(svc: ConsoleService, user: dict[str, Any], image_b64: str,
+                    action_robot: Any, latency_ms: Any, prompt: str) -> dict:
+    """§9.10: the drive loop's piggyback (last frame + last action). The
+    response carries the slot's LIVE PROMPT override (one round trip both
+    ways); empty means "keep driving with your own parameter"."""
+    job = active_infer_slot(svc, user)
+    try:
+        jpeg = base64.b64decode(image_b64 or "", validate=False)
+    except Exception as e:  # noqa: BLE001
+        raise RobovlaError("validation", f"image is not valid base64: {e}")
+    try:
+        seq = svc.robot_view.put(user["user_id"], jpeg,
+                                 [float(x) for x in (action_robot or [])][:7],
+                                 float(latency_ms or 0.0), str(prompt or ""),
+                                 job["job_id"])
+    except ValueError as e:
+        raise RobovlaError("validation", str(e))
+    svc.storage.set_job(job["job_id"], last_used_at=svc.clock())
+    return {"ok": True, "seq": seq,
+            "prompt": job["spec"].get("prompt_override") or ""}
+
+
+def set_slot_prompt(svc: ConsoleService, user: dict[str, Any], job_id: str,
+                    prompt: str) -> dict:
+    """Live prompt override (§9.10): the UI edits what the robot is asked,
+    the telemetry response delivers it on the robot's next tick."""
+    row = svc.storage.get_job(job_id)
+    if row is None or row["spec"]["type"] != "infer":
+        raise RobovlaError("not_found", f"unknown inference slot: {job_id}")
+    if user["role"] != "teacher" and row["spec"]["student"] != user["user_id"]:
+        raise RobovlaError("forbidden", "not your slot")
+    prompt = str(prompt or "").strip()[:200]
+    spec = dict(row["spec"])
+    spec["prompt_override"] = prompt
+    svc.storage.set_job_spec(job_id, spec)
+    svc.audit(user["user_id"], "slot.prompt", job_id, None, {"prompt": prompt})
+    return {"job_id": job_id, "prompt": prompt}
+
+
+def robot_predict(svc: ConsoleService, user: dict[str, Any], image_b64: str,
+                  prompt: str) -> dict[str, Any]:
+    """The ONLY robot-facing action path (§9.5): token + active-slot lease
+    check, proxy to the node agent, un-normalize with the dataset's
+    stats. (Telemetry shares the gate via :func:`active_infer_slot`.)"""
+    if not image_b64:
+        raise RobovlaError("validation", "image (base64) is required")
+    if not prompt:
+        raise RobovlaError("validation", "prompt is required")
+    job = active_infer_slot(svc, user)
+    now = svc.clock()
     runner = svc.runners.get(job["node_id"] or "")
     if runner is None:
         raise RobovlaError("node_offline", "slot node is offline")

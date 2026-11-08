@@ -262,7 +262,8 @@ Base URL: `http://<console-lan-ip>:8501` (console. The only endpoint robots and 
 - `GET /api/agent/datasets/{id}/bundle`. The one **console-side** route the agent calls. A tar of the prepared dataset (sha256 in the response. The agent pulls at dispatch, section 5.1). The agent presents the **same per-node pre-shared agent token**. The console verifies it against the argon2 hash in its DB (section 9.8). This is the only non-cookie console route. The agent holds no session.
 - The bundle pull is the only agent to console call. Everything else is the console polling the agent (section 4).
 
-### 9.10 Robot view + live prompt (designed 2026-11-08; implementation = next work item)
+### 9.10 Robot view + live prompt (built 2026-11-08; live-verified same day)
+Implementation notes: `POST /api/robot/telemetry` + `GET /api/infer/robot-view` + `POST /api/infer/slots/{job}/prompt`; ring in `robovla.telemetry.RobotViewStore` (RAM, per-student, maxlen 30); UI page `robot.html`; the drive node's telemetry call carries a **2 s stall budget** (it runs on the control timer — a stalled observability POST must never freeze the loop while the bridge holds its last duty; judge-caught) and never raises.
 Students learn from what the robot *sees* and *just did*, not from job-state chips.
 - `POST /api/robot/telemetry` `{image_b64, action_robot[7], latency_ms, prompt}` — Bearer robot token, piggybacked by `vla_drive` on every tick (1 Hz, ~8 KB JPEG). Same per-student rate limit as predict. The console keeps a per-student **RAM ring** (latest 30 frames + action rows; nothing persisted — tonight's frames are teaching aids, not records).
 - **The telemetry response carries the slot's live prompt override** (one round trip serves both directions): `vla_drive` applies it on its next tick. The slot row gains one optional `prompt` field; empty means "use the robot's own parameter".

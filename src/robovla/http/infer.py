@@ -1,5 +1,5 @@
 """Inference slots + the robot path (design §9.5) and the agent bundle pull
-(§9.9 — the ONE non-cookie console route).
+(§9.9 — a non-cookie console route; the robot bearer routes live here too).
 
 Slot claims create ``infer`` jobs (auto first-fit, no preemption): a free
 slot + VRAM -> 200 with the stable console endpoint; otherwise 202 queued
@@ -58,6 +58,30 @@ async def slots(request: Request, user: dict = Depends(current_user)) -> dict:
     return {"slots": jobs_ops.slot_board(svc(request))}
 
 
+@router.post("/slots/{job_id}/prompt")
+async def slot_prompt(job_id: str, request: Request,
+                      user: dict = Depends(require(ROLE_STUDENT, ROLE_TEACHER))) -> dict:
+    """§9.10 live prompt override (owner or teacher; audit-logged)."""
+    body = await request.json()
+    return jobs_ops.set_slot_prompt(svc(request), user, job_id,
+                                    body.get("prompt", ""))
+
+
+@router.get("/robot-view")
+async def robot_view(request: Request, user: dict = Depends(current_user)) -> dict:
+    """§9.10 robot view: students see THEIR robot; teacher sees all.
+    Newest frame (base64 JPEG) + recent action history per student."""
+    s = svc(request)
+    wanted = (s.robot_view.students() if user["role"] == ROLE_TEACHER
+              else [user["user_id"]])
+    views = {}
+    for stu in wanted:
+        v = s.robot_view.view(stu)
+        if v:
+            views[stu] = v
+    return {"views": views}
+
+
 @router.post("/slots/{job_id}/release")
 async def release(job_id: str, request: Request, user: dict = Depends(current_user)) -> dict:
     s = svc(request)
@@ -70,6 +94,25 @@ async def release(job_id: str, request: Request, user: dict = Depends(current_us
 
 
 # -- robot endpoint (Bearer student token; the ONLY robot-facing route) ---------
+
+
+@robot_router.post("/telemetry")
+async def robot_telemetry(request: Request,
+                          authorization: str = Header(default="")) -> dict:
+    """§9.10: the drive loop's piggyback (frame + action). The reply
+    carries the slot's live prompt override — one round trip both ways.
+    Same gate and rate family as predict."""
+    s = svc(request)
+    if not authorization.lower().startswith("bearer "):
+        raise RobovlaError("auth", "missing Bearer token")
+    token = authorization[7:].strip()
+    user = user_from_bearer(s, token)
+    s.check_rate("robot_telemetry", user["user_id"], _RATE_PER_S, 1.0)
+    body = await request.json()
+    return jobs_ops.robot_telemetry(s, user, body.get("image", ""),
+                                    body.get("action_robot"),
+                                    body.get("latency_ms"),
+                                    body.get("prompt", ""))
 
 
 @robot_router.post("/predict")
@@ -85,7 +128,7 @@ async def robot_predict(request: Request,
     return jobs_ops.robot_predict(s, user, body.get("image", ""), body.get("prompt", ""))
 
 
-# -- agent bundle pull (§9.9: same per-node agent token; the only non-cookie) ---
+# -- agent bundle pull (§9.9: same per-node agent token; non-cookie) -----------
 
 
 agent_router = APIRouter(prefix="/api/agent", tags=["agent"])

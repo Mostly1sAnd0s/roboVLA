@@ -39,6 +39,7 @@ from .ratelimit import RateLimiter
 from .runner import Runner
 from .sse import EventBus
 from .storage import Storage
+from .telemetry import RobotViewStore
 
 #: §9.5: idle inference slot auto-release (the Pi watchdog stops the robot on
 #: stale actions; the console frees the GPU).
@@ -93,6 +94,7 @@ class ConsoleService:
         self.bus = EventBus()
         self.limits = RateLimiter(now_ms=lambda: int(self._monotonic() * 1000))
         self._scheduler = self._build_scheduler()
+        self.robot_view = RobotViewStore()  # §9.10 (RAM ring; nothing persists)
         self._node_states: dict[str, NodeState] = {}
         self._procs: dict[str, list[dict]] = {}
         self._progress: dict[str, dict[str, Any]] = {}

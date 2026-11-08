@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — robot view</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main>
+  <h1>Robot view <span class="small muted">what the robot sees and just did (§9.10)</span></h1>
+  <div id="empty" class="card muted" hidden>
+    No telemetry yet. Run <code>vla_drive</code> on the Pi — it piggybacks
+    its frame and action here once per tick while driving.
+  </div>
+  <div id="views" class="grid cols2"></div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("robot.html", user);
+
+function arrowCanvas(action) {
+  // top-down robot: +x forward (up), +y left; arrow = commanded velocity
+  const c = document.createElement("canvas");
+  c.width = 160; c.height = 160; c.className = "arrowc";
+  const g = c.getContext("2d");
+  g.strokeStyle = "#444"; g.lineWidth = 1;
+  g.beginPath(); g.arc(80, 80, 70, 0, 7); g.stroke();  // body
+  const vx = action[0] || 0, vy = action[1] || 0;
+  const mag = Math.min(1, Math.hypot(vx, vy) / 0.5);
+  if (mag > 0.02) {
+    const ang = Math.atan2(-vx, vy);            // screen: up = forward
+    const ex = 80 + Math.cos(ang) * 65 * mag, ey = 80 - Math.sin(ang) * 65 * mag;
+    g.strokeStyle = "#e8590c"; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(80, 80); g.lineTo(ex, ey); g.stroke();
+    g.fillStyle = "#e8590c"; g.beginPath();
+    g.arc(ex, ey, 6, 0, 7); g.fill();
+  }
+  g.fillStyle = "#888"; g.font = "11px monospace";
+  g.fillText(`vx ${vx.toFixed(2)} vy ${vy.toFixed(2)} wz ${(action[2]||0).toFixed(2)}`, 8, 152);  // house 7-dim: (vx, vy, wz, 0..0)
+  return c;
+}
+
+function sparkline(history) {
+  const c = document.createElement("canvas");
+  c.width = 460; c.height = 60;
+  const g = c.getContext("2d");
+  g.strokeStyle = "#e8590c"; g.lineWidth = 2; g.beginPath();
+  history.slice(-40).forEach((h, i, a) => {
+    const v = Math.min(1, Math.hypot(h.action[0] || 0, h.action[1] || 0) / 0.5);
+    const x = 4 + i * (452 / Math.max(1, a.length - 1)), y = 56 - v * 50;
+    i ? g.lineTo(x, y) : g.moveTo(x, y);
+  });
+  g.stroke();
+  return c;
+}
+
+async function refresh() {
+  let data;
+  try { data = await api("/api/infer/robot-view"); }
+  catch (e) { return; }                      // console hiccup: keep last frame
+  const students = Object.keys(data.views);
+  $("#empty").hidden = students.length > 0;
+  const box = $("#views");
+  if (box.dataset.stu !== students.sort().join(",")) {
+    box.dataset.stu = students.sort().join(",");
+    box.innerHTML = students.map(s => `
+      <div class="card" data-stu="${esc(s)}">
+        <h2>${esc(s)}'s robot</h2>
+        <div class="row">
+          <img class="eye" width="240" height="180" style="background:#111" alt="robot camera">
+          <div class="grow"></div>
+        </div>
+        <div class="arrowbox" style="margin-top:8px"></div>
+        <div class="sparkbox"></div>
+        <div class="small muted meta"></div>
+        <div class="row" style="margin-top:8px">
+          <input class="grow promptin" maxlength="200" placeholder="live prompt">
+          <button class="secondary pbtn">set prompt</button>
+        </div>
+        <p class="small muted">The model obeys only behaviors its demos showed.
+          Try phrasings, not new verbs.</p>
+      </div>`).join("");
+    box.querySelectorAll(".card").forEach(card => {
+      card.querySelector(".pbtn").addEventListener("click", async () => {
+        const v = lastViews && lastViews[card.dataset.stu];
+        if (!v) return;
+        try {
+          await api(`/api/infer/slots/${v.slot_job}/prompt`,
+                    { method: "POST", body: { prompt: card.querySelector(".promptin").value } });
+          toast("prompt set — the robot applies it on its next tick");
+        } catch (e) { toast(e.message, true); }
+      });
+    });
+  }
+  lastViews = data.views;
+  students.forEach(s => {
+    const v = data.views[s], card = box.querySelector(`[data-stu="${s}"]`);
+    if (!card) return;
+    card.querySelector(".eye").src = `data:image/jpeg;base64,${v.frame_b64}`;
+    const ab = card.querySelector(".arrowbox"); ab.innerHTML = ""; ab.appendChild(arrowCanvas(v.action));
+    const sb = card.querySelector(".sparkbox"); sb.innerHTML = ""; sb.appendChild(sparkline(v.history));
+    card.querySelector(".meta").textContent =
+      `asked: "${v.prompt}" · ${v.latency_ms.toFixed(0)} ms · frame ${v.seq} · slot ${v.slot_job}`;
+    const pin = card.querySelector(".promptin");
+    if (document.activeElement !== pin) pin.placeholder = v.prompt || "live prompt";
+  });
+}
+let lastViews = null;
+await refresh();
+setInterval(refresh, 1000);
+})();
+</script>
+</body>
+</html>

@@ -126,6 +126,7 @@ const PAGES = [
   ["new-run.html", "New run"],
   ["class-board.html", "Class board"],
   ["slots.html", "Slots & robot"],
+  ["robot.html", "Robot view"],
 ];
 
 async function nav(active, user) {
