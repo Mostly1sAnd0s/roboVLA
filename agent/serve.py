@@ -247,14 +247,40 @@ def _load_smolvla_stack(adapter_dir: Path):
 class SlotServing:
     """Slot handles over loaded models (the ``/serve`` + ``/predict`` core)."""
 
-    def __init__(self, model_factory, *, log=None) -> None:
+    def __init__(self, model_factory, *, log=None, counter_path=None) -> None:
         if model_factory is None:
             raise RobovlaError("validation", "model_factory is required")
         self._factory = model_factory
         self._log = log or (lambda line: None)
         self._slots: dict[str, dict[str, Any]] = {}
-        self._next = 0
+        # Handle counter PERSISTS across process lifetimes (pilot
+        # 2026-11-08: an agent restart reset the counter while the console
+        # still held old handles; a new slot reused the name "slot-1",
+        # the console's release popped the wrong slot, and the real one
+        # leaked 2.8 GB of VRAM — killed-slot leak, audit
+        # kill.agent_failed "unknown slot handle").
+        self._counter_path = Path(counter_path) if counter_path else None
+        self._next = self._read_counter()
         self._lock = threading.Lock()
+
+    def _read_counter(self) -> int:
+        if self._counter_path is None:
+            return 0
+        try:
+            return int(self._counter_path.read_text().strip() or 0)
+        except (OSError, ValueError):
+            return 0
+
+    def _write_counter(self) -> None:
+        # best effort: losing it degrades to the old in-RAM behavior,
+        # never breaks serving
+        if self._counter_path is None:
+            return
+        try:
+            self._counter_path.parent.mkdir(parents=True, exist_ok=True)
+            self._counter_path.write_text(str(self._next))
+        except OSError:
+            pass
 
     # -- slots -----------------------------------------------------------------
 
@@ -268,6 +294,7 @@ class SlotServing:
         model = self._factory(run_id, adapter)  # may raise (e.g. stack)
         with self._lock:
             self._next += 1
+            self._write_counter()
             handle = f"slot-{self._next}"
             self._slots[handle] = {
                 "run_id": run_id, "adapter": adapter, "model": model,
@@ -298,8 +325,21 @@ class SlotServing:
                           f"predict will surface it")
             finally:
                 with self._lock:
-                    if handle in self._slots:
+                    gone = handle not in self._slots
+                    if not gone:
                         self._slots[handle]["loading"] = False
+                if gone:
+                    # Released while we were loading (or even before this
+                    # thread ran): release's unload hit a not-yet-loaded
+                    # model and freed nothing — THIS load is what owns the
+                    # VRAM, so it must unload, or the weights orphan.
+                    try:
+                        model.unload()
+                        self._log(f"[serve] {handle}: released during "
+                                  f"load — orphan unload done")
+                    except Exception as e:  # pragma: no cover
+                        self._log(f"[serve] {handle}: orphan unload "
+                                  f"failed ({e})")
         threading.Thread(target=_warm, name=f"slot-warm-{handle}",
                          daemon=True).start()
         self._log(f"[serve] {handle}: run={run_id} adapter={adapter} (warming)")

@@ -87,3 +87,10 @@ def test_health_exposes_fleet_config_for_the_forms(ui_env):
     node = r.json()["nodes"][0]
     assert node["student_selectable"] is True
     assert node["batch_presets"] == [1, 4, 8]
+
+
+def test_root_redirects_to_ui(ui_env):
+    # someone types host:8501 -> the console, not a JSON 404
+    r = ui_env.client.get("/", follow_redirects=False)
+    assert r.status_code in (302, 307, 308)
+    assert r.headers["location"] == "/ui/"

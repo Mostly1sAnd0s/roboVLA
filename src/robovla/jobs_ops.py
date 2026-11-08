@@ -171,6 +171,7 @@ async def kill_job(svc: ConsoleService, job_id: str, actor: str) -> dict[str, An
         raise RobovlaError("not_found", f"unknown job: {job_id}")
     if row["state"] in ("running", "finishing"):
         runner = svc.runners.get(row["node_id"] or "")
+        keep_handle = None
         if runner is not None:
             try:
                 if row["spec"]["type"] == "infer":
@@ -180,9 +181,18 @@ async def kill_job(svc: ConsoleService, job_id: str, actor: str) -> dict[str, An
                     await asyncio.to_thread(runner.kill, job_id)
             except RobovlaError as e:
                 svc.audit(actor, "kill.agent_failed", job_id, None, {"error": e.message})
+                # A slot whose release FAILED transiently (timeout, 5xx)
+                # must keep its handle: the row is killed, but the model
+                # is still resident until some release lands (pilot
+                # 2026-11-08 VRAM leak). not_found means nothing answers
+                # to that handle (agent restarted — its memory died with
+                # it), so retrying that one is pointless.
+                if (row["spec"]["type"] == "infer" and row.get("slot_handle")
+                        and e.code != "not_found"):
+                    keep_handle = row["slot_handle"]
         svc.scheduler.transition(job_id, "kill")
         svc.storage.set_job(job_id, state="killed", terminal_at=svc.clock(),
-                            slot_handle=None)
+                            slot_handle=keep_handle)
     else:  # queued — no agent involved
         svc.scheduler.transition(job_id, "kill")
         svc.storage.set_job(job_id, state="killed", terminal_at=svc.clock())

@@ -382,23 +382,46 @@ class ConsoleService:
                 continue
             if (now - _dt(row["last_used_at"])).total_seconds() > LEASE_S:
                 self._release_infer_job(row)
+        self._retry_slot_releases()
+
+    def _retry_slot_releases(self) -> None:
+        """Killed infer rows that still carry a slot_handle: their release
+        failed transiently, so the model is still resident on the node.
+        Retry every sweep until the agent answers (success clears the
+        handle; so does not_found — nothing owns it anymore)."""
+        for row in self.storage.list_jobs(state_in=("killed",)):
+            if row["spec"]["type"] != "infer" or not row.get("slot_handle"):
+                continue
+            runner = self.runners.get(row["node_id"] or "")
+            if runner is None:
+                continue
+            try:
+                runner.release(row["slot_handle"])
+            except RobovlaError as e:
+                if e.code != "not_found":
+                    continue
+            self.storage.set_job(row["job_id"], slot_handle=None)
 
     def _release_infer_job(self, row: dict[str, Any]) -> None:
         """Release a served inference slot: agent handle, scheduler state,
         storage row, class feed. No-op if already terminal (kill race)."""
         runner = self.runners.get(row["node_id"] or "")
+        keep_handle = None
         if runner is not None and row.get("slot_handle"):
             try:
                 runner.release(row["slot_handle"])
             except RobovlaError as e:
                 self.audit("system", "slot.release_failed", row["job_id"],
                            None, {"error": e.message})
+                if e.code != "not_found":
+                    keep_handle = row["slot_handle"]  # retry sweep finds it
         try:
             self._scheduler.transition(row["job_id"], "kill")
         except RobovlaError:
             return  # already terminal (an explicit kill won the race)
         self.storage.set_job(row["job_id"], state="killed",
-                             terminal_at=self.clock(), slot_handle=None)
+                             terminal_at=self.clock(),
+                             slot_handle=keep_handle)
         self.bus.publish(row["job_id"], "state",
                          {"state": "killed", "reason": "released"})
         self.bus.publish("class", "slots", {"job_id": row["job_id"],

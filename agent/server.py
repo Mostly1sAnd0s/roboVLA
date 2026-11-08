@@ -245,7 +245,8 @@ def make_agent_app(cfg: AgentConfig) -> FastAPI:
                      argv_builder=partial(job_argv, bin_path=cfg.job_bin),
                      puller=make_puller(cfg, log), log=log.log)
     probe = VramProbe(cfg.gpu)
-    serving = SlotServing(make_default_model_factory(cfg.workdir, log=log.log))
+    serving = SlotServing(make_default_model_factory(cfg.workdir, log=log.log),
+                          counter_path=Path(cfg.workdir) / "agent_slot_counter")
     log.log(f"[agent] robovla-agent {cfg.version} up (gpu={cfg.gpu}, "
             f"image={cfg.image_tag}, workdir={cfg.workdir})")
     return build_app(cfg, jobs=jobs, probe=probe, serving=serving, log=log)

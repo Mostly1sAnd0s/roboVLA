@@ -386,3 +386,51 @@ def test_warm_failure_does_not_break_serve():
     assert _wait(lambda: any("warm failed" in m for m in log))
     with pytest.raises(RuntimeError, match="out of memory"):
         serving.predict(handle, "aW1hZ2U=", "go")
+
+
+def test_slot_handles_survive_agent_restart(tmp_path):
+    """Counter persists: a restarted agent must NOT reissue handle names —
+    the console holds old handles, and a collision makes release pop the
+    wrong slot (pilot VRAM leak, kill.agent_failed audit)."""
+    counter = tmp_path / "agent_slot_counter"
+    s1 = SlotServing(lambda r, a: _LazyModel(), log=lambda m: None,
+                     counter_path=counter)
+    assert s1.serve("j_1", "a") == "slot-1"
+    assert s1.serve("j_2", "b") == "slot-2"
+    s2 = SlotServing(lambda r, a: _LazyModel(), log=lambda m: None,
+                     counter_path=counter)  # the restart
+    assert s2.serve("j_3", "c") == "slot-3"
+
+
+def test_release_during_load_orphan_unloads():
+    """release() landing while the warm thread is mid-load frees nothing
+    (the model is not loaded yet); the warm thread must unload the load
+    it completes, or the weights orphan (the 2026-11-08 leak)."""
+    import threading
+
+    class SlowLoad:
+        def __init__(self):
+            self.entered = threading.Event()
+            self.go = threading.Event()
+            self.loaded = False
+            self.unload_count = 0
+
+        def _ensure_loaded(self):
+            self.entered.set()
+            self.go.wait(5)
+            self.loaded = True
+
+        def unload(self):
+            self.unload_count += 1
+            self.loaded = False
+
+    model = SlowLoad()
+    log: list[str] = []
+    serving = SlotServing(lambda r, a: model, log=log.append)
+    handle = serving.serve("j_1", "runs/j_1/ckpt")
+    assert model.entered.wait(2), "warm thread never started"
+    serving.release(handle)          # lands mid-load: frees nothing yet
+    model.go.set()                   # the load completes into a gone slot
+    assert _wait(lambda: not model.loaded and model.unload_count >= 2), \
+        "warm thread orphaned the completed load"
+    assert any("orphan unload" in m for m in log)

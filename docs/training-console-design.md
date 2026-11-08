@@ -262,6 +262,14 @@ Base URL: `http://<console-lan-ip>:8501` (console. The only endpoint robots and 
 - `GET /api/agent/datasets/{id}/bundle`. The one **console-side** route the agent calls. A tar of the prepared dataset (sha256 in the response. The agent pulls at dispatch, section 5.1). The agent presents the **same per-node pre-shared agent token**. The console verifies it against the argon2 hash in its DB (section 9.8). This is the only non-cookie console route. The agent holds no session.
 - The bundle pull is the only agent to console call. Everything else is the console polling the agent (section 4).
 
+### 9.10 Robot view + live prompt (designed 2026-11-08; implementation = next work item)
+Students learn from what the robot *sees* and *just did*, not from job-state chips.
+- `POST /api/robot/telemetry` `{image_b64, action_robot[7], latency_ms, prompt}` — Bearer robot token, piggybacked by `vla_drive` on every tick (1 Hz, ~8 KB JPEG). Same per-student rate limit as predict. The console keeps a per-student **RAM ring** (latest 30 frames + action rows; nothing persisted — tonight's frames are teaching aids, not records).
+- **The telemetry response carries the slot's live prompt override** (one round trip serves both directions): `vla_drive` applies it on its next tick. The slot row gains one optional `prompt` field; empty means "use the robot's own parameter".
+- **UI "robot view" panel** (extends `slots.html`): auto-refreshing frame thumbnail from the robot's eyes, the commanded action as an animated vector arrow (vx/vy strafing becomes *visible*), a rolling |v|/wz sparkline, and the prompt as an editable textfield (any logged-in member of the slot's class; the edit is audit-logged as `slot.prompt`).
+- Invariants kept: the robot still only *calls* the console (no HTTP server on the Pi, no new listening ports, LAN-only); student scoping matches §9.2 (own view; teacher sees all).
+- **The prompt field is a query into the behavior distribution, not a chatbot.** UI label states it: "the model obeys only behaviors its demos showed. Try phrasings, not new verbs." This is deliberate curriculum: near-synonym prompts test generalization live; unseen behaviors must fail, and watching them fail teaches the data-grounding lesson better than a slide.
+
 ## 10. Portability and scalability
 
 **Core principle: hardware lives in config, not code. The stack lives in the image, not the machine.** The console has no knowledge of "pai1" or "5090" as machines. A node is an entry in `fleet.yaml` with a hardware profile. A node's software is a **standard runner container** (one image per accelerator family). Moving the class to a new room, a new school, or a cloud box = a new `fleet.yaml`, same images, same code. (Appendix A: full default config.)

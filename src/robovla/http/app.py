@@ -68,6 +68,13 @@ def create_app(svc: ConsoleService, *, ui_dir: str | Path | None = None,
     app.include_router(admin_users.router)
 
     if ui_dir is not None and Path(ui_dir).is_dir():
+        from fastapi.responses import RedirectResponse
         from fastapi.staticfiles import StaticFiles
         app.mount("/ui", StaticFiles(directory=str(ui_dir), html=True), name="ui")
+
+        @app.get("/", include_in_schema=False)
+        async def _root() -> RedirectResponse:
+            # the browser-facing default: someone types host:8501 and
+            # lands on the console, not a JSON 404
+            return RedirectResponse(url="/ui/")
     return app
