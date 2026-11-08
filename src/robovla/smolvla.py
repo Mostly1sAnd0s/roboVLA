@@ -21,9 +21,10 @@ probe):
     seam reads it at load. An artifact without it is not servable —
     loud failure beats a silently wrong denormalization.
 
-SmolVLA gets NO proprioceptive state: the rover dataset has none, and a
-constant-zero state feature would give mean/std normalization a zero
-std-dev. The converter therefore writes images + actions + task only.
+Proprioception: SmolVLA's ``prepare_state`` requires an
+``observation.state`` input, so both sides (converter + serving seam)
+carry a constant-zero 3-dim placeholder — the rover has no sensors to
+fill it, and the normalizer's ``std + eps`` maps it to exactly 0.
 """
 
 from __future__ import annotations
@@ -42,6 +43,13 @@ SMOLVLA_MODEL_ID = "lerobot/smolvla_base"
 #: reads (lerobot ``OBS_IMAGES`` convention; the policy derives its input
 #: features from the dataset, so this string IS the interface).
 SMOLVLA_CAMERA_KEY = "observation.images.camera1"
+
+#: The proprioceptive state feature the model REQUIRES (prepare_state
+#: reads it unconditionally — CPU verification 2026-11-08) although the
+#: rover has no proprioception: a constant-zero placeholder both sides
+#: write/feed (mean/std normalizes it to exactly 0 via std+eps).
+SMOLVLA_STATE_KEY = "observation.state"
+SMOLVLA_STATE_DIM = 3
 
 #: Course driving action width (vx, vy, wz) — the SmolVLA action width for
 #: this embodiment (padded internally to ``max_action_dim``).

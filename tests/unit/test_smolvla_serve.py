@@ -95,11 +95,16 @@ def test_predict_maps_raw_to_house_norm(tmp_path):
     assert out[2] == pytest.approx(0.55)
     assert out[3:] == [0.0, 0.0, 0.0, 0.0]  # degenerate padded dims
     # the frame reached the preprocessor as CHW float [0,1] + raw prompt
+    # + the constant-zero state the model requires (parity with the
+    # converter's dataset rows)
     frame = seen["frame"]
     img = frame["observation.images.camera1"]
     assert img.shape == (3, 48, 64) and img.dtype == np.float32
     assert img.max() <= 1.0
     assert frame["task"] == "park at the cone"
+    # the state reaches the policy BATCHED (1,3) — the embed_prefix
+    # contract the real stack enforced on 2026-11-08
+    assert seen["batch"]["observation.state"].tolist() == [[0.0, 0.0, 0.0]]
 
 
 def test_predict_uses_the_stamped_dataset_stats(tmp_path):

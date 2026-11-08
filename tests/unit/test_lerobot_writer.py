@@ -18,9 +18,9 @@ from PIL import Image
 
 from images import lerobot_writer
 from images.lerobot_writer import (FPS, SMOLVLA_CAMERA_KEY,
-                                   build_episode_sample, decode_frame,
-                                   features_spec, lerobot_steps,
-                                   write_lerobot_dataset)
+                                   SMOLVLA_STATE_KEY, build_episode_sample,
+                                   decode_frame, features_spec,
+                                   lerobot_steps, write_lerobot_dataset)
 from robovla.core.errors import RobovlaError
 
 
@@ -35,7 +35,7 @@ def _jpeg(w: int = 224, h: int = 224) -> bytes:
 
 def test_features_spec_single_camera_three_dim_action():
     f = features_spec()
-    assert set(f) == {SMOLVLA_CAMERA_KEY, "action"}
+    assert set(f) == {SMOLVLA_CAMERA_KEY, "action", SMOLVLA_STATE_KEY}
     cam = f[SMOLVLA_CAMERA_KEY]
     assert cam["dtype"] == "image" and cam["shape"] == (224, 224, 3)
     act = f["action"]
@@ -43,9 +43,13 @@ def test_features_spec_single_camera_three_dim_action():
     assert act["names"] == ["vx", "vy", "wz"]
 
 
-def test_no_state_feature_by_design():
-    # a constant-zero proprio would give mean/std a zero std-dev (§9.5 note)
-    assert not any("state" in k for k in features_spec())
+def test_state_feature_is_the_required_zero_placeholder():
+    # prepare_state reads observation.state UNCONDITIONALLY (the CPU
+    # verification crashed the first train step without it, 2026-11-08);
+    # the rover has no proprioception, so the placeholder is 3 zeros and
+    # the normalizer's std+eps keeps it numerically exact.
+    st = features_spec()[SMOLVLA_STATE_KEY]
+    assert st["dtype"] == "float32" and st["shape"] == (3,)
 
 
 @pytest.mark.parametrize("frames,batch,epochs,want", [

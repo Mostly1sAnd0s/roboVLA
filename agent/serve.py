@@ -29,7 +29,8 @@ from PIL import Image
 
 from robovla.core.errors import RobovlaError
 from robovla.core.spec import DEFAULT_MODEL, MODEL_FAMILY_SMOLVLA, model_family
-from robovla.smolvla import (SMOLVLA_CAMERA_KEY, SERVING_META_NAME,
+from robovla.smolvla import (SERVING_META_NAME, SMOLVLA_CAMERA_KEY,
+                             SMOLVLA_STATE_DIM, SMOLVLA_STATE_KEY,
                              parse_serving_meta, to_house_action)
 
 
@@ -191,10 +192,20 @@ class SmolVlaModel:
             # reader hands the trainer's preprocessor at train time).
             SMOLVLA_CAMERA_KEY: torch.from_numpy(
                 np.asarray(img, dtype=np.float32).transpose(2, 0, 1) / 255.0),
+            # the same constant-zero placeholder state the converter
+            # trained with (prepare_state requires the key)
+            SMOLVLA_STATE_KEY: np.zeros(SMOLVLA_STATE_DIM, dtype=np.float32),
             "task": prompt,
         }
         with torch.inference_mode():
             batch = preprocess(frame)
+            # the single-frame preprocess batches images + language but
+            # passes the state through UNBATCHED (probe, 2026-11-08:
+            # (3,) reaches embed_prefix and dies on shape[1]); the model
+            # contract is (B, state_dim) — batch it here, shape-guarded
+            st = batch.get(SMOLVLA_STATE_KEY)
+            if getattr(st, "ndim", 2) == 1:
+                batch[SMOLVLA_STATE_KEY] = st.reshape((1, -1))
             action = postprocess(policy.select_action(batch))
         raw = [float(x) for x in torch.asarray(action).reshape(-1)[:3]]
         return list(to_house_action(raw, self._stats))

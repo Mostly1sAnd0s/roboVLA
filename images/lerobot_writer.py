@@ -18,12 +18,15 @@ Layout written (one episode per ``save_episode``):
 
 Deliberate choices (documented deltas from the openvla path):
 
-  * NO ``observation.state``: the rover dataset carries no proprioception.
-    A constant-zero state feature would hand mean/std normalization a
-    zero std-dev; omitting the feature removes state from the policy's
-    dataset-derived input features entirely (``make_policy`` derives
-    features from the dataset; the wrapper passes
-    ``--policy.input_features=null``).
+  * ``observation.state`` is a CONSTANT-ZERO placeholder (3 dims): the
+    rover dataset carries no proprioception, but SmolVLA's
+    ``prepare_state`` reads ``observation.state`` UNCONDITIONALLY —
+    omitting the feature crashes the first forward (CPU verification,
+    2026-11-08: KeyError 'observation.state' at the first train step).
+    A zero-variance state is numerically safe: lerobot's normalizer
+    divides by ``std + eps`` (normalize_processor.py), so the zero state
+    maps to exactly 0 and the trainable state_proj just learns a bias.
+    The serving seam feeds the same zero state.
   * 3-dim actions (``robovla.smolvla.to_smolvla_action`` slices the
     course 7-dim padding): SmolVLA pads to ``max_action_dim=32``
     internally, and the serving seam un-slices with the dataset stats.
@@ -49,8 +52,9 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from robovla.core.errors import RobovlaError
-from robovla.smolvla import SMOLVLA_ACTION_DIM, SMOLVLA_CAMERA_KEY, \
-    to_smolvla_action
+from robovla.smolvla import (SMOLVLA_ACTION_DIM, SMOLVLA_CAMERA_KEY,
+                             SMOLVLA_STATE_DIM, SMOLVLA_STATE_KEY,
+                             to_smolvla_action)
 
 #: The episode capture rate (the shared episode validator's contract:
 #: actions.json and frames are 1:1 at 10 Hz).
@@ -81,6 +85,11 @@ def features_spec(h: int = FRAME_HW[0], w: int = FRAME_HW[1]) -> dict[str, dict]
             "dtype": "float32",
             "shape": (SMOLVLA_ACTION_DIM,),
             "names": ["vx", "vy", "wz"],
+        },
+        SMOLVLA_STATE_KEY: {
+            "dtype": "float32",
+            "shape": (SMOLVLA_STATE_DIM,),
+            "names": ["vx_ctx", "vy_ctx", "wz_ctx"],
         },
     }
 
@@ -172,6 +181,7 @@ def write_lerobot_dataset(root: str | Path, repo_id: str,
         raise RobovlaError("dataset_not_ready",
                            "no episodes to materialize as a LeRobot dataset")
     try:
+        import numpy as np
         from lerobot.datasets.lerobot_dataset import LeRobotDataset
     except ImportError as e:
         raise RobovlaError(
@@ -187,8 +197,15 @@ def write_lerobot_dataset(root: str | Path, repo_id: str,
             root=root, robot_type=robot_type, use_videos=False)
         for ep in samples:
             for frame, action in zip(ep["frames"], ep["actions"]):
+                # validate_frame (datasets/feature_utils.py) requires the
+                # EXACT declared dtypes: float32 ndarray actions, uint8
+                # ndarray images (the CPU verification caught the list
+                # form being rejected — 2026-11-08)
                 ds.add_frame({SMOLVLA_CAMERA_KEY: frame,
-                              "action": action, "task": ep["task"]})
+                              "action": np.asarray(action, dtype=np.float32),
+                              SMOLVLA_STATE_KEY: np.zeros(SMOLVLA_STATE_DIM,
+                                                          dtype=np.float32),
+                              "task": ep["task"]})
             ds.save_episode()
         ds.finalize()
     except RobovlaError:
