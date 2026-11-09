@@ -85,6 +85,17 @@ async function refresh() {
         </div>
         <p class="small muted">The model obeys only behaviors its demos showed.
           Try phrasings, not new verbs.</p>
+        <div class="row" style="margin-top:6px">
+          <span class="label">gain</span>
+          <input class="gainin" type="number" min="16" max="1023" style="width:80px">
+          <span class="label">exposure</span>
+          <input class="expin" type="number" min="0" max="1431" style="width:80px">
+          <button class="secondary cbtn">apply camera</button>
+          <button class="secondary cclear">reset</button>
+        </div>
+        <p class="small warn">Camera changes hit the SENSOR live — the policy
+          sees the new pixels immediately, and it was trained under one fixed
+          setting. Nudge in small steps; the view here shows what it now sees.</p>
       </div>`).join("");
     box.querySelectorAll(".card").forEach(card => {
       card.querySelector(".pbtn").addEventListener("click", async () => {
@@ -96,6 +107,23 @@ async function refresh() {
           toast("prompt set — the robot applies it on its next tick");
         } catch (e) { toast(e.message, true); }
       });
+      async function sendCamera(gain, exposure) {
+        const v = lastViews && lastViews[card.dataset.stu];
+        if (!v) return;
+        try {
+          await api(`/api/infer/slots/${v.slot_job}/camera`,
+                    { method: "POST", body: { gain, exposure } });
+          toast("camera set — sensor changes on the robot's next tick");
+        } catch (e) { toast(e.message, true); }
+      }
+      card.querySelector(".cbtn").addEventListener("click", () => {
+        const g = card.querySelector(".gainin").value;
+        const e = card.querySelector(".expin").value;
+        if (g === "" && e === "") { toast("enter gain and/or exposure", true); return; }
+        sendCamera(g === "" ? null : +g, e === "" ? null : +e);
+      });
+      card.querySelector(".cclear").addEventListener("click",
+        () => sendCamera(null, null));
     });
   }
   lastViews = data.views;
@@ -109,6 +137,9 @@ async function refresh() {
       `asked: "${v.prompt}" · ${v.latency_ms.toFixed(0)} ms · frame ${v.seq} · slot ${v.slot_job}`;
     const pin = card.querySelector(".promptin");
     if (document.activeElement !== pin) pin.placeholder = v.prompt || "live prompt";
+    const gin = card.querySelector(".gainin"), ein = card.querySelector(".expin");
+    if (document.activeElement !== gin) gin.value = v.camera.gain ?? "";
+    if (document.activeElement !== ein) ein.value = v.camera.exposure ?? "";
   });
 }
 let lastViews = null;

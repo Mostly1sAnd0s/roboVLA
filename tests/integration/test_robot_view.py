@@ -99,3 +99,42 @@ def test_oversized_frame_rejected(env):
     big = base64.b64encode(b"0" * (3 * 1024 * 1024)).decode()
     r = _tele(env, auth, image=big)
     assert r.status_code == 400 and "too large" in r.text
+
+
+def test_camera_override_round_trip(env):
+    slot, auth = _armed(env)
+    env.as_teacher()
+    r = env.client.post(f"/api/infer/slots/{slot['job_id']}/camera",
+                        json={"gain": 300, "exposure": ""})
+    assert r.status_code == 200
+    assert r.json()["camera"] == {"gain": 300, "exposure": None}
+
+    env.as_student("s01")
+    r = _tele(env, auth)
+    assert r.json()["camera"] == {"gain": 300, "exposure": None}
+
+    # the view echoes it back for the UI inputs
+    env.as_teacher()
+    v = env.client.get("/api/infer/robot-view").json()["views"]["s01"]
+    assert v["camera"]["gain"] == 300
+
+    # reset (both null) returns "use your own defaults"
+    r = env.client.post(f"/api/infer/slots/{slot['job_id']}/camera",
+                        json={"gain": None, "exposure": None})
+    assert r.json()["camera"] == {"gain": None, "exposure": None}
+
+
+def test_camera_override_validation_and_scope(env):
+    slot, auth = _armed(env)
+    env.as_teacher()
+    r = env.client.post(f"/api/infer/slots/{slot['job_id']}/camera",
+                        json={"gain": 5})  # below sensor minimum
+    assert r.status_code == 400 and "16..1023" in r.text
+    r = env.client.post(f"/api/infer/slots/{slot['job_id']}/camera",
+                        json={"gain": "brighter please"})
+    assert r.status_code == 400
+    # another student cannot touch it
+    env.as_student("s07")
+    r = env.client.post(f"/api/infer/slots/{slot['job_id']}/camera",
+                        json={"gain": 900})
+    assert r.status_code == 403

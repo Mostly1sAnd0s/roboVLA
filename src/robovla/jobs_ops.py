@@ -364,7 +364,39 @@ def robot_telemetry(svc: ConsoleService, user: dict[str, Any], image_b64: str,
         raise RobovlaError("validation", str(e))
     svc.storage.set_job(job["job_id"], last_used_at=svc.clock())
     return {"ok": True, "seq": seq,
-            "prompt": job["spec"].get("prompt_override") or ""}
+            "prompt": job["spec"].get("prompt_override") or "",
+            "camera": job["spec"].get("camera_override") or {}}
+
+
+def set_slot_camera(svc: ConsoleService, user: dict[str, Any], job_id: str,
+                    gain: Any, exposure: Any) -> dict:
+    """Live camera override (§9.10 extension): sensor controls travel the
+    same slot→telemetry→node path as the prompt. THE POLICY WAS TRAINED AT
+    ONE EXPOSURE — nudging gain for a dark room is fine, re-lighting mid-
+    episode moves the pixels off the training distribution; the UI says so.
+    None clears a field (node keeps its own parameter for it)."""
+    row = svc.storage.get_job(job_id)
+    if row is None or row["spec"]["type"] != "infer":
+        raise RobovlaError("not_found", f"unknown inference slot: {job_id}")
+    if user["role"] != "teacher" and row["spec"]["student"] != user["user_id"]:
+        raise RobovlaError("forbidden", "not your slot")
+    def clamp(v, lo, hi, what):
+        if v in (None, ""):
+            return None
+        try:
+            iv = int(float(v))
+        except (TypeError, ValueError):
+            raise RobovlaError("validation", f"{what} is not a number")
+        if not lo <= iv <= hi:
+            raise RobovlaError("validation", f"{what} must be {lo}..{hi}")
+        return iv
+    cam = {"gain": clamp(gain, 16, 1023, "gain"),
+           "exposure": clamp(exposure, 0, 1431, "exposure")}
+    spec = dict(row["spec"])
+    spec["camera_override"] = cam
+    svc.storage.set_job_spec(job_id, spec)
+    svc.audit(user["user_id"], "slot.camera", job_id, None, cam)
+    return {"job_id": job_id, "camera": cam}
 
 
 def set_slot_prompt(svc: ConsoleService, user: dict[str, Any], job_id: str,

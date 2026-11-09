@@ -67,6 +67,15 @@ async def slot_prompt(job_id: str, request: Request,
                                     body.get("prompt", ""))
 
 
+@router.post("/slots/{job_id}/camera")
+async def slot_camera(job_id: str, request: Request,
+                      user: dict = Depends(require(ROLE_STUDENT, ROLE_TEACHER))) -> dict:
+    """§9.10 live camera override (owner or teacher; audit-logged)."""
+    body = await request.json()
+    return jobs_ops.set_slot_camera(svc(request), user, job_id,
+                                    body.get("gain"), body.get("exposure"))
+
+
 @router.get("/robot-view")
 async def robot_view(request: Request, user: dict = Depends(current_user)) -> dict:
     """§9.10 robot view: students see THEIR robot; teacher sees all.
@@ -78,6 +87,11 @@ async def robot_view(request: Request, user: dict = Depends(current_user)) -> di
     for stu in wanted:
         v = s.robot_view.view(stu)
         if v:
+            row = s.storage.get_job(v["slot_job"])
+            v["camera"] = (row["spec"].get("camera_override") or {} \
+                           if row else {})
+            v["asked_prompt"] = (row["spec"].get("prompt_override") or "") \
+                if row else ""
             views[stu] = v
     return {"views": views}
 
