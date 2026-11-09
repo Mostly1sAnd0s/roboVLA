@@ -8,6 +8,7 @@ Plus: idempotency dedup, run-now ordering, and the error-shape contract.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 
 
@@ -124,6 +125,7 @@ def test_submit_run_and_drive_to_done_via_sse(env):
                       artifacts=[{"kind": "adapter", "path": f"artifacts/{jid}/adapter.safetensors",
                                   "nbytes": 12345}])
     events: list[tuple[str, dict]] = []
+    connected = threading.Event()
 
     def consume():
         # read the SSE stream until the terminal state event arrives;
@@ -132,6 +134,11 @@ def test_submit_run_and_drive_to_done_via_sse(env):
             with env.client.stream("GET", f"/stream/{jid}") as resp:
                 assert resp.status_code == 200
                 assert resp.headers["content-type"].startswith("text/event-stream")
+                # the stream is live ONLY from subscribe time on: the driver
+                # must not tick before this fires or the terminal event can
+                # beat the subscription (flake, 2026-11-08: job reached done
+                # before consume() connected -> events stayed empty)
+                connected.set()
                 etype = None
                 for line in resp.iter_lines():
                     if line.startswith("event: "):
@@ -145,9 +152,9 @@ def test_submit_run_and_drive_to_done_via_sse(env):
         except Exception:  # noqa: BLE001 - stream aborted while the thread read it
             pass
 
-    import threading
     t = threading.Thread(target=consume)
     t.start()
+    assert connected.wait(2.0), "SSE consumer never connected"
     # drive the loop: admit + poll until terminal
     for _ in range(20):
         env.tick()
