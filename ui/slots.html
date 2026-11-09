@@ -21,7 +21,7 @@
       <div id="claimout" class="small" style="margin-top:10px"></div>
       <h2 style="margin-top:16px">Slot board (live)</h2>
       <table id="board"><thead><tr>
-        <th>slot</th><th>student</th><th>run</th><th>state</th><th>pos</th>
+        <th>slot</th><th>student</th><th>run</th><th>state</th><th>pos</th><th></th>
       </tr></thead><tbody></tbody></table>
     </div>
     <div class="card">
@@ -61,13 +61,27 @@ $("#run").innerHTML = done.map(r =>
 
 async function loadBoard() {
   const { slots } = await api("/api/infer/slots");
-  $("#board tbody").innerHTML = slots.map(s => `<tr>
+  $("#board tbody").innerHTML = slots.map(s => {
+    const mine = s.student === user.user_id || isTeacher;
+    return `<tr>
       <td class="mono small">${esc(s.job_id)}</td>
       <td>${esc(s.student)}</td>
       <td class="mono small">${s.run_id ? esc(s.run_id) : "—"}</td>
       <td>${badge(s.state)}</td>
-      <td>${s.state === "queued" ? s.position : "—"}</td></tr>`).join("")
-    || `<tr><td colspan="5" class="muted">no slots</td></tr>`;
+      <td>${s.state === "queued" ? s.position : "—"}</td>
+      <td>${mine ? `<button class="danger small rbtn" data-job="${esc(s.job_id)}">${
+        s.state === "running" ? "release" : "cancel"}</button>` : ""}</td>
+    </tr>`; }).join("")
+    || `<tr><td colspan="6" class="muted">no slots</td></tr>`;
+  $$("#board .rbtn").forEach(b => b.addEventListener("click", async () => {
+    const route = b.textContent.trim() === "release"
+      ? `/api/infer/slots/${b.dataset.job}/release`
+      : `/api/runs/${b.dataset.job}/kill`;
+    try { await api(route, { method: "POST", body: {} });
+      toast("slot released — the model unloads on the node"); }
+    catch (e) { toast(e.message, true); }
+    loadBoard();
+  }));
 }
 loadBoard().catch(err => toast(err.message, true));
 setInterval(loadBoard, 10000);
