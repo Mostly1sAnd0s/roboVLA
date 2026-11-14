@@ -7,21 +7,23 @@
 <link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
-<main style="max-width:380px; margin-top:12vh">
+<main class="container container--narrow" style="padding-top:12vh">
   <h1>roboVLA training console</h1>
   <p class="muted small">Class lab instrument — 12 students, 1 robot each.</p>
-  <form id="f">
-    <label for="u">Username</label>
-    <input id="u" autocomplete="username" autofocus required>
-    <label for="p">Password</label>
-    <input id="p" type="password" autocomplete="current-password" required>
-    <button type="submit">Log in</button>
+  <form id="f" class="card mt4">
+    <div class="field"><label for="u">Username</label>
+      <input id="u" autocomplete="username" autofocus required></div>
+    <div class="field"><label for="p">Password</label>
+      <input id="p" type="password" autocomplete="current-password" required></div>
+    <button type="submit" class="block">Log in</button>
+    <p id="err" class="small err-text mb0" role="alert"></p>
   </form>
-  <p id="err" class="small" style="color:var(--err)"></p>
 </main>
 <script>
 document.getElementById("f").addEventListener("submit", async (e) => {
   e.preventDefault();
+  const err = document.getElementById("err");
+  err.textContent = "";
   try {
     const r = await fetch("/api/auth/login", {
       method: "POST",
@@ -33,11 +35,12 @@ document.getElementById("f").addEventListener("submit", async (e) => {
     });
     if (!r.ok) {
       const d = await r.json().catch(() => ({}));
+      // the §9.6 error shape: {"error": {"code", "message"}}
       throw new Error(d.error ? d.error.message : `HTTP ${r.status}`);
     }
     location.href = "/ui/index.html";
-  } catch (err) {
-    document.getElementById("err").textContent = err.message;
+  } catch (e2) {
+    err.textContent = e2.message;
   }
 });
 </script>

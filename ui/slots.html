@@ -3,42 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>roboVLA — slots & robot</title>
+<title>roboVLA — serving slots</title>
 <link rel="stylesheet" href="/ui/style.css">
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Inference slots &amp; your robot</h1>
-  <div class="grid cols2">
+<main class="container">
+  <div class="page-head">
+    <h1>Serving slots</h1>
+    <span class="muted small">a claim is a job: it queues, holds VRAM, and leases (§9.5)</span>
+    <div class="actions"><a href="/ui/robot.html"><button class="secondary">Robot view</button></a></div>
+  </div>
+
+  <div class="grid grid--2">
     <div class="card">
-      <h2>Serve my adapter</h2>
-      <p class="small muted">A <b>done</b> run with an adapter becomes a serving
-        slot (8-bit, no preemption — claims without a free slot queue like any job, §9.5).</p>
-      <label for="run">Done run</label>
-      <select id="run"></select>
-      <button id="claim">Claim slot</button>
-      <div id="claimout" class="small" style="margin-top:10px"></div>
-      <h2 style="margin-top:16px">Slot board (live)</h2>
-      <table id="board"><thead><tr>
-        <th>slot</th><th>student</th><th>run</th><th>state</th><th>pos</th><th></th>
-      </tr></thead><tbody></tbody></table>
+      <div class="card-head"><h2>Serve my adapter</h2></div>
+      <p class="small muted">A <b>done</b> train run becomes a serving slot. If no
+        slot is free the claim queues like any other job — no preemption.</p>
+      <div class="field"><label for="run">Done run</label>
+        <select id="run"></select></div>
+      <div class="btn-row">
+        <button id="claim">Claim slot</button>
+        <span class="xs muted">lease: 300 s idle, then it releases itself</span>
+      </div>
+      <div id="claimout" class="small mt3"></div>
+
+      <div class="card-head mt3"><h2>Slot board (live)</h2>
+        <div class="actions"><button class="ghost sm" id="reload">refresh</button></div></div>
+      <div class="tablewrap"><table id="board"><thead><tr>
+        <th>slot</th><th>student</th><th>run</th><th>state</th>
+        <th class="num">pos</th><th class="num">node</th><th></th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
+
     <div class="card">
-      <h2>Pi connection (the robot talks only to the console, §9.5)</h2>
-      <div class="row"><span class="label">endpoint</span>
-        <code id="endpoint" class="grow"></code></div>
-      <div class="row"><span class="label">auth</span>
-        <span class="small">Bearer &lt;your Pi token&gt;</span></div>
-      <div class="row"><span class="label">lease</span>
-        <span class="small">300 s idle → slot releases automatically</span></div>
-      <h2 style="margin-top:16px">My Pi token</h2>
-      <div id="tok" class="small"></div>
-      <div id="tokout" class="small mono" style="margin-top:8px"></div>
-      <div class="row" style="margin-top:10px">
+      <div class="card-head"><h2>Pi connection</h2>
+        <span class="muted xs">the robot talks only to the console (§9.5)</span></div>
+      <div class="field"><label>predict endpoint</label>
+        <code id="endpoint" class="mono"></code>
+        <div class="hint">stable for the life of the course — nodes may move, this does not</div></div>
+      <div class="field"><label>auth</label>
+        <code class="mono">Authorization: Bearer &lt;your Pi token&gt;</code></div>
+
+      <div class="card-head mt3"><h2>My Pi token</h2></div>
+      <div class="small" id="tok"></div>
+      <div id="tokout" class="mono small mt2"></div>
+      <div class="btn-row mt2">
         <button class="secondary" id="gen">generate / rotate (shown once)</button>
         <button class="danger" id="rev">revoke</button>
       </div>
+      <p class="xs muted">The value is shown once and stored hashed. Rotating it
+        breaks the Pi until the new value is written to
+        <code>token_file</code> on the robot.</p>
     </div>
   </div>
 </main>
@@ -50,9 +66,8 @@ const user = await me();
 if (!user) location.href = "/ui/login.html";
 nav("slots.html", user);
 const isTeacher = user.role === "teacher";
-const [{ runs }, { nodes }] = await Promise.all([api("/api/runs"), api("/api/health")]);
-$("#endpoint").textContent =
-  `http://${location.hostname}:8501/api/robot/predict`;
+const [{ runs }] = await Promise.all([api("/api/runs")]);
+$("#endpoint").textContent = `${location.protocol}//${location.hostname}:8501/api/robot/predict`;
 
 const done = runs.filter(r => r.job_type === "train" && r.state === "done");
 $("#run").innerHTML = done.map(r =>
@@ -64,27 +79,34 @@ async function loadBoard() {
   $("#board tbody").innerHTML = slots.map(s => {
     const mine = s.student === user.user_id || isTeacher;
     return `<tr>
-      <td class="mono small">${esc(s.job_id)}</td>
+      <td class="mono xs"><a href="/ui/run.html?job=${esc(s.job_id)}">${esc(s.job_id)}</a></td>
       <td>${esc(s.student)}</td>
-      <td class="mono small">${s.run_id ? esc(s.run_id) : "—"}</td>
+      <td class="mono xs">${s.run_id ? esc(s.run_id) : "—"}</td>
       <td>${badge(s.state)}</td>
-      <td>${s.state === "queued" ? s.position : "—"}</td>
-      <td>${mine ? `<button class="danger small rbtn" data-job="${esc(s.job_id)}">${
-        s.state === "running" ? "release" : "cancel"}</button>` : ""}</td>
+      <td class="num">${s.state === "queued" ? s.position : "—"}</td>
+      <td class="num muted">${esc(s.node_id ?? "—")}</td>
+      <td class="right">${mine ? `<button class="danger sm rbtn"
+        data-job="${esc(s.job_id)}" data-state="${esc(s.state)}">${
+          s.state === "running" ? "release" : "cancel"}</button>` : ""}</td>
     </tr>`; }).join("")
-    || `<tr><td colspan="6" class="muted">no slots</td></tr>`;
+    || `<tr><td colspan="7" class="muted">no slots claimed</td></tr>`;
   $$("#board .rbtn").forEach(b => b.addEventListener("click", async () => {
-    const route = b.textContent.trim() === "release"
-      ? `/api/infer/slots/${b.dataset.job}/release`
-      : `/api/runs/${b.dataset.job}/kill`;
-    try { await api(route, { method: "POST", body: {} });
-      toast("slot released — the model unloads on the node"); }
-    catch (e) { toast(e.message, true); }
-    loadBoard();
+    const running = b.dataset.state === "running";
+    if (!await confirmAction({ title: `${running ? "Release" : "Cancel"} ${b.dataset.job}?`,
+        body: running ? "The model unloads on the node; a robot driving right now stops."
+                      : "The queued claim is cancelled.",
+        okLabel: running ? "Release" : "Cancel" })) return;
+    try {
+      await api(running ? `/api/infer/slots/${b.dataset.job}/release`
+                        : `/api/runs/${b.dataset.job}/kill`, { method: "POST", body: {} });
+      toast(running ? "slot released — the model unloads on the node" : "claim cancelled");
+      loadBoard();
+    } catch (e) { toast(e.message, true); }
   }));
 }
+$("#reload").addEventListener("click", loadBoard);
 loadBoard().catch(err => toast(err.message, true));
-setInterval(loadBoard, 10000);
+poll(loadBoard, 10000);
 
 $("#claim").addEventListener("click", async () => {
   const run_id = $("#run").value;
@@ -92,37 +114,43 @@ $("#claim").addEventListener("click", async () => {
   try {
     const r = await api("/api/infer/slots/claim", { method: "POST", body: { run_id } });
     $("#claimout").innerHTML = r.queued
-      ? `queued (position ${r.position}${r.eta_s != null ? `, ETA ${fmtEta(r.eta_s)}` : ""}) — ` +
-        `served automatically when a slot frees`
-      : `<b>slot ${esc(r.slot)}</b> on ${esc(r.node_id)} — your robot can predict now.`;
+      ? `queued (position ${r.position}${r.eta_s != null ? `, ETA ${fmtEta(r.eta_s)}` : ""})
+         — served automatically when a slot frees`
+      : `<b class="ok">slot ${esc(r.slot)}</b> on ${esc(r.node_id)} — your robot can
+         predict now. Open the <a href="/ui/robot.html">robot view</a>.`;
     loadBoard();
   } catch (err) { toast(err.message, true); }
 });
 
-function renderTok(meData) {
-  const active = (meData.tokens ?? []).filter(t => t.revoked_at == null);
+function renderTok(u) {
+  const active = (u.tokens ?? []).filter(t => t.revoked_at == null);
   $("#tok").innerHTML = active.length
-    ? `token <span class="mono">${esc(active[0].token_id)}</span> active (shown once at creation)`
-    : "no active token — generate one for the Pi";
+    ? `token <span class="mono">${esc(active[0].token_id)}</span> active
+       <span class="xs muted">created ${fmtTs(active[0].created_at)}</span>`
+    : `<span class="warn-text">no active token</span> — generate one for the Pi`;
 }
 renderTok(user);
+
 async function tokAction(action) {
   try {
     const r = await api("/api/auth/token", { method: "POST", body: { action } });
     if (r.token) {
-      $("#tokout").innerHTML =
-        `<b style="color:var(--warn)">shown once — copy now:</b><br>${esc(r.token)}`;
+      $("#tokout").innerHTML = `<b class="warn-text">shown once — copy now:</b>
+        <br><span class="mono" style="user-select:all">${esc(r.token)}</span>`;
       toast("token created (shown once)");
     } else toast("token revoked");
-    const fresh = await api("/api/auth/me");
-    renderTok(fresh);
+    renderTok(await api("/api/auth/me"));
   } catch (err) { toast(err.message, true); }
 }
 $("#gen").addEventListener("click", () => {
   const active = (user.tokens ?? []).some(t => t.revoked_at == null);
   tokAction(active ? "rotate" : "generate");
 });
-$("#rev").addEventListener("click", () => tokAction("revoke"));
+$("#rev").addEventListener("click", async () => {
+  if (!await confirmAction({ title: "Revoke your Pi token?", danger: true,
+      body: "Any robot using it stops predicting immediately.", okLabel: "Revoke" })) return;
+  tokAction("revoke");
+});
 })();
 </script>
 </body>

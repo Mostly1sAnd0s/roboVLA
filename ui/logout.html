@@ -1,10 +1,14 @@
 <!doctype html>
 <html lang="en">
-<head><meta charset="utf-8"><title>logging out…</title></head>
+<head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>logging out…</title><link rel="stylesheet" href="/ui/style.css"></head>
 <body>
+<main class="container container--narrow" style="padding-top:20vh">
+  <p class="muted">Logging out…</p>
+</main>
 <script>
 fetch("/api/auth/logout", { method: "POST" }).finally(() => { location.href = "/ui/login.html"; });
 </script>
-<p>Logging out…</p>
 </body>
 </html>

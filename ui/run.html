@@ -8,33 +8,37 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Run <span class="mono" id="jobid"></span> <span id="state"></span></h1>
-  <div class="grid cols2">
+<main class="container">
+  <div class="page-head">
+    <h1 class="mono" id="jobid">run</h1>
+    <span id="state"></span>
+    <span class="muted small" id="eta"></span>
+    <div class="actions" id="actions"></div>
+  </div>
+
+  <div class="metrics card" id="strip"></div>
+
+  <div class="grid grid--2 mt3">
     <div class="card">
-      <h2>Progress <span class="muted small" id="eta"></span></h2>
-      <div class="bar" style="margin-bottom:10px"><i id="pfill" style="width:0%"></i></div>
-      <canvas id="loss" class="spark"></canvas>
-      <p class="small muted" id="losscap"></p>
-      <canvas id="val" class="spark"></canvas>
-      <p class="small muted">held-out val accuracy (per checkpoint)</p>
-      <div class="grid cols3" style="margin-top:8px">
-        <div><span class="muted small">step</span><div id="step">—</div></div>
-        <div><span class="muted small">loss</span><div id="lossv">—</div></div>
-        <div><span class="muted small">grad norm</span><div id="grad">—</div></div>
-        <div><span class="muted small">lr</span><div id="lrv">—</div></div>
-        <div><span class="muted small">VRAM</span><div id="vram">—</div></div>
-        <div><span class="muted small">util</span><div id="util">—</div></div>
-      </div>
-      <div id="probe"></div>
+      <div class="card-head"><h2>Progress</h2>
+        <span class="muted xs" id="losscap"></span></div>
+      <div class="bar"><i id="pfill" style="width:0%"></i></div>
+      <canvas id="loss" class="chart mt2"></canvas>
+      <div class="xs muted mt2">train loss</div>
+      <canvas id="val" class="chart mt2" style="--h:80px"></canvas>
+      <div class="xs muted mt2">held-out accuracy (per checkpoint)</div>
+      <div id="probe" class="small mt2"></div>
     </div>
+
     <div class="card">
-      <h2>Config</h2>
+      <div class="card-head"><h2>Config</h2>
+        <div class="actions"><a class="small" id="tklink" hidden
+          href="#" target="_blank">ticket →</a></div></div>
       <div id="cfg" class="small mono"></div>
-      <details><summary>raw log (live)</summary><pre id="log" class="log"></pre></details>
-      <h2 style="margin-top:14px">Artifacts <span class="muted small">(§7.6)</span></h2>
+      <h2 class="mt3">Artifacts</h2>
       <div id="arts" class="small">—</div>
-      <div id="actions" style="margin-top:14px"></div>
+      <details open><summary>raw log (live)</summary>
+        <pre id="log" class="log" style="--lmax:320px"></pre></details>
     </div>
   </div>
 </main>
@@ -44,77 +48,91 @@
 (async () => {
 const user = await me();
 if (!user) location.href = "/ui/login.html";
-nav("", user);
+nav("", user);                       // run pages are not a nav destination
 const job = new URLSearchParams(location.search).get("job");
 if (!job) { location.href = "/ui/index.html"; return; }
 
 const view = await api(`/api/runs/${job}`).catch(err => { toast(err.message, true); return; });
+if (!view) return;
 $("#jobid").textContent = job;
-$("#cfg").innerHTML = `<table>
+$("#cfg").innerHTML = `<div class="tablewrap"><table>
   <tr><td class="muted">type / student</td><td>${esc(view.job_type)} / ${esc(view.student)}</td></tr>
-  <tr><td class="muted">dataset</td><td>${esc(view.dataset)}</td></tr>
+  <tr><td class="muted">dataset</td><td class="mono">${esc(view.dataset)}</td></tr>
   <tr><td class="muted">node</td><td>${esc(view.node_id ?? "auto")}</td></tr>
   <tr><td class="muted">quant / seed</td><td>${esc(view.config.quant)} / ${view.config.seed}</td></tr>
   <tr><td class="muted">lora</td><td>rank ${view.config.lora.rank} · α ${view.config.lora.alpha}</td></tr>
   <tr><td class="muted">optim</td><td>batch ${view.config.optim.batch} · lr ${view.config.optim.lr}
       · epochs ${view.config.optim.epochs}</td></tr>
-  <tr><td class="muted">budget</td><td>${view.config.budget_gb} GB (est.)</td></tr>
-</table>`;
+  <tr><td class="muted">budget</td><td>${view.config.budget_gb} GB (estimate)</td></tr>
+  ${view.note ? `<tr><td class="muted">note</td><td>${esc(view.note)}</td></tr>` : ""}
+</table></div>`;
+if (view.ticket_id) {
+  const a = $("#tklink");
+  a.hidden = false;
+  a.href = `/api/runs/${job}/ticket`;
+}
+
+const STRIP = [["step", "step"], ["loss", "loss"], ["grad norm", "grad_norm"],
+               ["lr", "lr"], ["VRAM", "vram_gb"], ["util", "gpu_util"]];
+function paintStrip(m) {
+  $("#strip").innerHTML = STRIP.map(([label, k]) => {
+    let v = m[k];
+    if (k === "step") v = m.step != null ? `${m.step}/${m.total ?? "?"}` : "—";
+    else if (k === "loss" || k === "grad_norm") v = v != null ? Number(v).toFixed(4) : "—";
+    else if (k === "vram_gb") v = v != null ? `${Number(v).toFixed(1)} GB` : "—";
+    else if (k === "gpu_util") v = v != null ? `${Math.round(v * 100)}%` : "—";
+    else v = v ?? "—";
+    return `<div class="metric"><div class="k">${label}</div><div class="v small">${esc(String(v))}</div></div>`;
+  }).join("");
+}
+paintStrip({});
 
 function setState(v) {
   $("#state").innerHTML = badge(v.state);
+  let eta = "";
   if (v.state === "queued") {
-    $("#eta").textContent = `position ${v.position} · ETA ${fmtEta(v.eta_s)}`;
-    if (v.blockers) $("#eta").textContent += ` · waiting: ` +
-      v.blockers.map(b => `${b.node} (${b.reason})`).join(", ");
+    eta = `position ${v.position} · ETA ${fmtEta(v.eta_s)}`;
+    if (v.blockers) eta += ` · waiting: ` + v.blockers.map(b => `${b.node} (${b.reason})`).join(", ");
   }
+  $("#eta").textContent = eta;
 }
 setState(view);
 
-// terminal jobs: seed history from the REST views, skip the live stream
 const losses = [], vals = [], logEl = $("#log");
-if (view.state === "done" || view.state === "failed" || view.state === "killed") {
-  try {
-    const { log } = await api(`/api/runs/${job}/logs?offset=0`);
-    logEl.textContent = log;
-  } catch { /* logs purged or never dispatched */ }
+const repaintLoss = () => spark($("#loss"), [{ color: "#4cc2ff", points: losses }]);
+const repaintVal = () => spark($("#val"), [{ color: "#3fb950", points: vals }]);
+
+if (["done", "failed", "killed"].includes(view.state)) {
+  api(`/api/runs/${job}/logs?offset=0`).then(r => { logEl.textContent = r.log; }).catch(() => {});
 }
 
-const close = view.state === "running" || view.state === "queued" || view.state === "finishing"
-  ? sse(job, (type, d) => {
-      if (type === "state") {
-        setState({ state: d.state, position: d.position, eta_s: d.eta_s });
-        if (d.state === "done" || d.state === "failed" || d.state === "killed") {
-          loadMeta(); loadArts();
-        }
-      }
-      if (type === "metrics") {
-        losses.push([d.step, d.loss]);
-        $("#step").textContent = `${d.step}/${d.total ?? "?"}`;
-        $("#lossv").textContent = d.loss != null ? d.loss.toFixed(4) : "—";
-        $("#grad").textContent = d.grad_norm != null ? d.grad_norm.toFixed(3) : "—";
-        $("#lrv").textContent = d.lr != null ? String(d.lr) : "—";
-        $("#vram").textContent = d.vram_gb != null ? `${d.vram_gb.toFixed(1)} GB` : "—";
-        $("#util").textContent = d.gpu_util != null ? `${Math.round(d.gpu_util * 100)}%` : "—";
-        const total = d.total ?? Math.max(...losses.map(p => p[0]));
-        $("#pfill").style.width = `${Math.min(100, d.step / total * 100).toFixed(1)}%`;
-        spark($("#loss"), [{ color: "#4cc2ff", points: losses }]);
-        $("#losscap").textContent = `train loss (${losses.length} points)`;
-      }
-      if (type === "val") {
-        vals.push([vals.length + 1, d.accuracy]);
-        spark($("#val"), [{ color: "#3fb950", points: vals }]);
-      }
-      if (type === "log") {
-        logEl.textContent += d.line + "\n";
-        logEl.scrollTop = logEl.scrollHeight;
-      }
-      if (type === "predict")
-        $("#probe").innerHTML = `<p class="small">smoke probe action:
-          <span class="mono">${d.action_norm.map(v => v.toFixed(2)).join(" ")}</span></p>`;
-      if (type === "artifacts") loadArts();
-    })
-  : () => {};
+if (["running", "queued", "finishing"].includes(view.state)) {
+  sse(job, (type, d) => {
+    if (type === "state") {
+      setState({ state: d.state, position: d.position, eta_s: d.eta_s, blockers: d.blockers });
+      if (["done", "failed", "killed"].includes(d.state)) { loadMeta(); loadArts(); }
+    }
+    if (type === "metrics") {
+      if (d.loss != null) losses.push([d.step, d.loss]);
+      paintStrip(d);
+      const total = d.total ?? Math.max(...losses.map(p => p[0]), 1);
+      $("#pfill").style.width = `${Math.min(100, (d.step / total) * 100).toFixed(1)}%`;
+      repaintLoss();
+      const last = lastPoint(losses);
+      $("#losscap").textContent = last ? `step ${last[0]} · loss ${last[1].toFixed(4)}` : "";
+    }
+    if (type === "val") { vals.push([vals.length + 1, d.accuracy]); repaintVal(); }
+    if (type === "log") { logEl.textContent += d.line + "\n"; logEl.scrollTop = logEl.scrollHeight; }
+    if (type === "predict")
+      $("#probe").innerHTML = `smoke probe action: <span class="mono">${
+        d.action_norm.map(v => v.toFixed(2)).join(" ")}</span>`;
+    if (type === "artifacts") loadArts();
+  });
+} else {
+  // terminal run: seed the curves from the durable metric rows if present
+  api(`/api/runs/${job}`).then(v => { if (v.progress) paintStrip(v.progress); });
+}
+repaintLoss(); repaintVal();
 
 async function loadMeta() {
   const v = await api(`/api/runs/${job}`).catch(() => null);
@@ -122,26 +140,29 @@ async function loadMeta() {
 }
 async function loadArts() {
   try {
-    const { artifacts } = await api(`/api/runs/${job}/artifacts`);
+    const { artifacts, downloadable } = await api(`/api/runs/${job}/artifacts`);
     $("#arts").innerHTML = artifacts.length
-      ? artifacts.map(a => `<div class="row"><span class="mono">${esc(a.kind)}</span>
-          <span class="muted">${fmtBytes(a.nbytes)}</span>
-          <a href="/api/runs/${job}/artifacts/${esc(a.kind)}" download>download</a></div>`).join("")
+      ? `<div class="tablewrap"><table>${artifacts.map(a => `<tr>
+          <td class="mono">${esc(a.kind)}</td>
+          <td class="num muted">${fmtBytes(a.nbytes)}</td>
+          <td class="right">${downloadable.includes(a.kind)
+            ? `<a href="/api/runs/${job}/artifacts/${esc(a.kind)}" download>download</a>`
+            : `<span class="muted xs">on the node</span>`}</td></tr>`).join("")}</table></div>`
       : "—";
-  } catch { /* not ours / no artifacts yet */ }
+  } catch { /* not ours / none yet */ }
 }
 loadArts();
 
 const amOwner = user.role === "teacher" || view.student === user.user_id;
 const canKill = user.role === "teacher"
-  ? view.state !== "done" && view.state !== "failed" && view.state !== "killed"
+  ? !["done", "failed", "killed"].includes(view.state)
   : view.state === "queued";
-if (amOwner) {
-  $("#actions").innerHTML = `
-    <a class="mono small" href="/api/runs/${job}/ticket">ticket →</a>
-    ${canKill ? `<button class="danger" id="kill">kill</button>` : ""}`;
-  const k = $("#kill");
-  if (k) k.addEventListener("click", async () => {
+if (amOwner && canKill) {
+  $("#actions").innerHTML = `<button class="danger" id="kill">kill</button>`;
+  $("#kill").addEventListener("click", async () => {
+    if (!await confirmAction({ title: `Kill ${job}?`, danger: true,
+        body: "The job gets SIGTERM then SIGKILL; checkpoints already written are kept.",
+        okLabel: "Kill run" })) return;
     try {
       await api(`/api/runs/${job}/kill`, { method: "POST" });
       toast("kill requested");

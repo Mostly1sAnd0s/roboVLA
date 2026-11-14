@@ -8,12 +8,12 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Teacher panel <span class="muted small">(every action is audit-logged, §9.7)</span></h1>
-  <div class="grid cols2">
+<main class="container">
+  <div class="page-head"><h1>Teacher panel <span class="muted small">(every action is audit-logged, §9.7)</span></h1></div>
+  <div class="grid grid--2">
     <div class="card">
       <h2>Nodes (the registry is the fleet config, §8.2)</h2>
-      <table id="nodes"><thead><tr>
+      <div class="tablewrap"><table id="nodes"><thead><tr>
         <th>node</th><th>state</th><th>VRAM</th><th>slots</th><th>presets</th><th>orphan</th><th></th>
       </tr></thead><tbody></tbody></table>
       <details><summary>add node</summary>
@@ -37,7 +37,7 @@
     </div>
     <div class="card">
       <h2>Queue ops</h2>
-      <table id="jobs"><thead><tr>
+      <div class="tablewrap"><table id="jobs"><thead><tr>
         <th>job</th><th>student</th><th>type</th><th>state</th><th>node</th><th></th>
       </tr></thead><tbody></tbody></table>
       <h2 style="margin-top:16px">System</h2>

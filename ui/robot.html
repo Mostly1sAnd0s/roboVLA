@@ -8,13 +8,24 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Robot view <span class="small muted">what the robot sees and just did (§9.10)</span></h1>
-  <div id="empty" class="card muted" hidden>
-    No telemetry yet. Run <code>vla_drive</code> on the Pi — it piggybacks
-    its frame and action here once per tick while driving.
+<main class="container">
+  <div class="page-head">
+    <h1>Robot view</h1>
+    <span class="muted small">what the robot sees and just did (§9.10)</span>
+    <div class="actions">
+      <label class="check"><input type="checkbox" id="big"> big frame</label>
+      <a href="/ui/slots.html" class="small">serving slots →</a>
+    </div>
   </div>
-  <div id="views" class="grid cols2"></div>
+
+  <div id="empty" class="card muted" hidden>
+    <p class="mt0">No telemetry yet. Start <code>vla_drive</code> on the Pi (dry
+      run is fine) — it piggybacks its frame and last action here on every tick.</p>
+    <p class="small mb0">Checklist: <a href="/ui/slots.html">claim a slot</a>
+      immediately before driving (the lease idles out at 300 s), and remember
+      every ROS command on the robot runs with <code>ROS_DOMAIN_ID=99</code>.</p>
+  </div>
+  <div class="grid grid--l" id="views"></div>
 </main>
 <script src="/ui/vendor/htmx.min.js"></script>
 <script src="/ui/app.js"></script>
@@ -24,106 +35,85 @@ const user = await me();
 if (!user) location.href = "/ui/login.html";
 nav("robot.html", user);
 
-function arrowCanvas(action) {
-  // top-down robot: +x forward (up), +y left; arrow = commanded velocity
-  const c = document.createElement("canvas");
-  c.width = 160; c.height = 160; c.className = "arrowc";
-  const g = c.getContext("2d");
-  g.strokeStyle = "#444"; g.lineWidth = 1;
-  g.beginPath(); g.arc(80, 80, 70, 0, 7); g.stroke();  // body
-  const vx = action[0] || 0, vy = action[1] || 0;
-  const mag = Math.min(1, Math.hypot(vx, vy) / 0.5);
-  if (mag > 0.02) {
-    const ang = Math.atan2(-vx, vy);            // screen: up = forward
-    const ex = 80 + Math.cos(ang) * 65 * mag, ey = 80 - Math.sin(ang) * 65 * mag;
-    g.strokeStyle = "#e8590c"; g.lineWidth = 4;
-    g.beginPath(); g.moveTo(80, 80); g.lineTo(ex, ey); g.stroke();
-    g.fillStyle = "#e8590c"; g.beginPath();
-    g.arc(ex, ey, 6, 0, 7); g.fill();
-  }
-  g.fillStyle = "#888"; g.font = "11px monospace";
-  g.fillText(`vx ${vx.toFixed(2)} vy ${vy.toFixed(2)} wz ${(action[2]||0).toFixed(2)}`, 8, 152);  // house 7-dim: (vx, vy, wz, 0..0)
-  return c;
+let lastViews = null;
+
+function speedChart(canvas, history) {
+  const pts = history.slice(-40).map((h, i) =>
+    [i, Math.hypot(h.action?.[0] ?? 0, h.action?.[1] ?? 0)]);
+  return spark(canvas, [{ color: "#e8590c", points: pts }]);
 }
 
-function sparkline(history) {
-  const c = document.createElement("canvas");
-  c.width = 460; c.height = 60;
-  const g = c.getContext("2d");
-  g.strokeStyle = "#e8590c"; g.lineWidth = 2; g.beginPath();
-  history.slice(-40).forEach((h, i, a) => {
-    const v = Math.min(1, Math.hypot(h.action[0] || 0, h.action[1] || 0) / 0.5);
-    const x = 4 + i * (452 / Math.max(1, a.length - 1)), y = 56 - v * 50;
-    i ? g.lineTo(x, y) : g.moveTo(x, y);
-  });
-  g.stroke();
-  return c;
+function build(student) {
+  return `<div class="card" data-stu="${esc(student)}">
+    <div class="card-head"><h2>${esc(student)}'s robot</h2>
+      <div class="actions xs muted">slot <span class="mono slotj">—</span></div></div>
+    <img class="eye frame" alt="robot camera view">
+    <div class="row mt2" style="align-items:flex-start">
+      <canvas class="arrow chart" style="--h:170px; flex:0 0 200px; max-width:200px"></canvas>
+      <canvas class="speed chart" style="--h:170px; flex:1 1 200px"></canvas>
+    </div>
+    <div class="xs muted meta mt2"></div>
+
+    <div class="field mt3"><label for="p-${esc(student)}">Live prompt
+      <span class="muted">— a query into what the demos showed, not a chatbot</span></label>
+      <div class="row">
+        <input class="promptin grow" maxlength="200" placeholder="live prompt">
+        <button class="secondary pbtn">set</button>
+      </div>
+      <div class="hint">Try phrasings, not new verbs: an unseen behaviour must
+        fail, and watching it fail is the lesson.</div></div>
+
+    <div class="field"><label>Camera (hits the sensor live)</label>
+      <div class="row">
+        <div class="unit"><span class="label xs">gain</span>
+          <input class="gainin" type="number" min="16" max="1023"></div>
+        <div class="unit"><span class="label xs">exposure</span>
+          <input class="expin" type="number" min="0" max="1431"></div>
+        <button class="secondary cbtn">apply</button>
+        <button class="ghost cclear">reset</button>
+      </div>
+      <div class="hint warn-text">The policy was trained under ONE fixed
+        exposure. Nudging gain for a dark room is legitimate; re-lighting
+        mid-episode walks the pixels off the training distribution.</div></div>
+  </div>`;
 }
 
 async function refresh() {
   let data;
   try { data = await api("/api/infer/robot-view"); }
-  catch (e) { return; }                      // console hiccup: keep last frame
-  const students = Object.keys(data.views);
+  catch { return; }                     // console hiccup: keep the last frame
+  const students = Object.keys(data.views).sort();
   $("#empty").hidden = students.length > 0;
   const box = $("#views");
-  if (box.dataset.stu !== students.sort().join(",")) {
-    box.dataset.stu = students.sort().join(",");
-    box.innerHTML = students.map(s => `
-      <div class="card" data-stu="${esc(s)}">
-        <h2>${esc(s)}'s robot</h2>
-        <div class="row">
-          <img class="eye" width="240" height="180" style="background:#111" alt="robot camera">
-          <div class="grow"></div>
-        </div>
-        <div class="arrowbox" style="margin-top:8px"></div>
-        <div class="sparkbox"></div>
-        <div class="small muted meta"></div>
-        <div class="row" style="margin-top:8px">
-          <input class="grow promptin" maxlength="200" placeholder="live prompt">
-          <button class="secondary pbtn">set prompt</button>
-        </div>
-        <p class="small muted">The model obeys only behaviors its demos showed.
-          Try phrasings, not new verbs.</p>
-        <div class="row" style="margin-top:6px">
-          <span class="label">gain</span>
-          <input class="gainin" type="number" min="16" max="1023" style="width:80px">
-          <span class="label">exposure</span>
-          <input class="expin" type="number" min="0" max="1431" style="width:80px">
-          <button class="secondary cbtn">apply camera</button>
-          <button class="secondary cclear">reset</button>
-        </div>
-        <p class="small warn">Camera changes hit the SENSOR live — the policy
-          sees the new pixels immediately, and it was trained under one fixed
-          setting. Nudge in small steps; the view here shows what it now sees.</p>
-      </div>`).join("");
+  if (box.dataset.stu !== students.join(",")) {
+    box.dataset.stu = students.join(",");
+    box.innerHTML = students.map(build).join("");
     box.querySelectorAll(".card").forEach(card => {
+      const who = card.dataset.stu;
+      const slotOf = () => lastViews?.[who]?.slot_job;
       card.querySelector(".pbtn").addEventListener("click", async () => {
-        const v = lastViews && lastViews[card.dataset.stu];
-        if (!v) return;
+        if (!slotOf()) return toast("no slot yet", true);
         try {
-          await api(`/api/infer/slots/${v.slot_job}/prompt`,
-                    { method: "POST", body: { prompt: card.querySelector(".promptin").value } });
+          await api(`/api/infer/slots/${slotOf()}/prompt`,
+            { method: "POST", body: { prompt: card.querySelector(".promptin").value } });
           toast("prompt set — the robot applies it on its next tick");
         } catch (e) { toast(e.message, true); }
       });
-      async function sendCamera(gain, exposure) {
-        const v = lastViews && lastViews[card.dataset.stu];
-        if (!v) return;
+      const sendCamera = async (gain, exposure) => {
+        if (!slotOf()) return toast("no slot yet", true);
         try {
-          await api(`/api/infer/slots/${v.slot_job}/camera`,
-                    { method: "POST", body: { gain, exposure } });
+          await api(`/api/infer/slots/${slotOf()}/camera`,
+            { method: "POST", body: { gain, exposure } });
           toast("camera set — sensor changes on the robot's next tick");
         } catch (e) { toast(e.message, true); }
-      }
+      };
       card.querySelector(".cbtn").addEventListener("click", () => {
         const g = card.querySelector(".gainin").value;
-        const e = card.querySelector(".expin").value;
-        if (g === "" && e === "") { toast("enter gain and/or exposure", true); return; }
-        sendCamera(g === "" ? null : +g, e === "" ? null : +e);
+        const x = card.querySelector(".expin").value;
+        if (g === "" && x === "") return toast("enter gain and/or exposure", true);
+        sendCamera(g === "" ? null : +g, x === "" ? null : +x);
       });
-      card.querySelector(".cclear").addEventListener("click",
-        () => sendCamera(null, null));
+      card.querySelector(".cclear").addEventListener("click", () => sendCamera(null, null));
     });
   }
   lastViews = data.views;
@@ -131,20 +121,24 @@ async function refresh() {
     const v = data.views[s], card = box.querySelector(`[data-stu="${s}"]`);
     if (!card) return;
     card.querySelector(".eye").src = `data:image/jpeg;base64,${v.frame_b64}`;
-    const ab = card.querySelector(".arrowbox"); ab.innerHTML = ""; ab.appendChild(arrowCanvas(v.action));
-    const sb = card.querySelector(".sparkbox"); sb.innerHTML = ""; sb.appendChild(sparkline(v.history));
+    card.querySelector(".slotj").textContent = v.slot_job;
+    arrowChart(card.querySelector(".arrow"), v.action);
+    speedChart(card.querySelector(".speed"), v.history ?? []);
     card.querySelector(".meta").textContent =
-      `asked: "${v.prompt}" · ${v.latency_ms.toFixed(0)} ms · frame ${v.seq} · slot ${v.slot_job}`;
+      `asked: "${v.prompt}" · ${Number(v.latency_ms).toFixed(0)} ms · frame ${v.seq}`
+      + ` · ${(v.history ?? []).length} frames in the ring`;
     const pin = card.querySelector(".promptin");
     if (document.activeElement !== pin) pin.placeholder = v.prompt || "live prompt";
     const gin = card.querySelector(".gainin"), ein = card.querySelector(".expin");
-    if (document.activeElement !== gin) gin.value = v.camera.gain ?? "";
-    if (document.activeElement !== ein) ein.value = v.camera.exposure ?? "";
+    if (document.activeElement !== gin) gin.value = v.camera?.gain ?? "";
+    if (document.activeElement !== ein) ein.value = v.camera?.exposure ?? "";
   });
 }
-let lastViews = null;
+
+$("#big").addEventListener("change", (e) =>
+  $$(".eye").forEach(im => im.classList.toggle("frame--sm", !e.target.checked)));
 await refresh();
-setInterval(refresh, 1000);
+poll(refresh, 1000);
 })();
 </script>
 </body>

@@ -1,99 +1,321 @@
 /* roboVLA training console — lab instrument, not a marketing site.
-   One stylesheet, readable by students (design §7). */
+   One stylesheet, readable by students (design §7).
+
+   Layout rules of this file:
+   * Sizes come from tokens (--s*, --t*), not from per-element magic numbers.
+   * Nothing fixed-width except form controls' content. Grids use auto-fit,
+     so a phone gets one column and the classroom display gets four.
+   * Canvas and video elements scale with their container and stay sharp
+     (app.js sizes the backing store for the device pixel ratio). */
+
+/* ---- tokens ---------------------------------------------------------------- */
 :root {
   --bg: #0d1117; --panel: #161b22; --panel2: #1c2330; --line: #2d3646;
   --fg: #d8dee9; --dim: #8b98a9; --acc: #4cc2ff; --ok: #3fb950;
   --warn: #d29922; --err: #f85149; --mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px;
+  --r: 8px; --r-sm: 6px; --r-pill: 999px;
+  --t-xs: 12px; --t-sm: 13px; --t-md: 14px; --t-lg: 16px; --t-h2: 13px; --t-h1: 22px;
+  --row: 1.45;
+  --wide: 1560px; --narrow: 720px;
+  --nav-h: 46px;
 }
+
 * { box-sizing: border-box; }
-body { margin: 0; background: var(--bg); color: var(--fg);
-       font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: var(--t-md)/var(--row) system-ui, -apple-system, "Segoe UI", sans-serif;
+  display: flex; flex-direction: column; min-height: 100vh;
+}
 a { color: var(--acc); text-decoration: none; }
 a:hover { text-decoration: underline; }
-h1 { font-size: 20px; margin: 0 0 12px; }
-h2 { font-size: 15px; margin: 0 0 8px; color: var(--dim); text-transform: uppercase;
-     letter-spacing: .06em; }
-code, .mono { font-family: var(--mono); font-size: 13px; }
+h1 { font-size: var(--t-h1); line-height: 1.2; margin: 0; font-weight: 650; }
+h2 {
+  font-size: var(--t-h2); margin: 0; color: var(--dim); text-transform: uppercase;
+  letter-spacing: .06em; font-weight: 600;
+}
+h3 { font-size: var(--t-md); margin: 0; }
+p { margin: var(--s2) 0; }
+code, .mono { font-family: var(--mono); font-size: var(--t-sm); }
+:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 
-/* nav */
-nav { display: flex; gap: 4px; align-items: center; padding: 8px 16px;
-      background: var(--panel); border-bottom: 1px solid var(--line);
-      position: sticky; top: 0; z-index: 10; flex-wrap: wrap; }
-nav .brand { font-weight: 700; margin-right: 12px; }
-nav a { padding: 5px 10px; border-radius: 6px; color: var(--fg); }
+/* ---- app shell ------------------------------------------------------------- */
+/* One container width everywhere, so pages line up with each other. Pages
+   that carry video or a wide board opt in with .container--wide. */
+.container {
+  width: 100%; max-width: var(--wide); margin-inline: auto;
+  padding: var(--s4) clamp(var(--s3), 2.5vw, var(--s6));
+  flex: 1 0 auto;
+}
+.container--narrow { max-width: var(--narrow); }
+
+.page-head {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s2) var(--s3);
+  margin-bottom: var(--s4); padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--line);
+}
+.page-head .actions { margin-left: auto; display: flex; gap: var(--s2); align-items: center; }
+
+/* nav: brand | workflow groups | identity. It wraps instead of overflowing
+   and becomes two lines on a phone. */
+nav {
+  display: flex; align-items: center; gap: var(--s2) var(--s3); flex-wrap: wrap;
+  padding: var(--s2) clamp(var(--s3), 2.5vw, var(--s6));
+  background: var(--panel); border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 10; min-height: var(--nav-h);
+}
+nav .brand { font-weight: 700; margin-right: var(--s2); white-space: nowrap; }
+nav a { padding: 4px 9px; border-radius: var(--r-sm); color: var(--fg); white-space: nowrap; }
 nav a:hover { background: var(--panel2); text-decoration: none; }
 nav a.active { background: var(--panel2); color: var(--acc); }
-nav .spacer { flex: 1; }
-nav .who { color: var(--dim); font-size: 13px; }
+nav .navgroup {
+  display: flex; align-items: center; gap: 2px;
+  padding-left: var(--s3); border-left: 1px solid var(--line);
+}
+nav .navgroup:first-of-type { border-left: none; padding-left: 0; }
+nav .spacer { flex: 1 1 auto; }
+nav .who { color: var(--dim); font-size: var(--t-sm); white-space: nowrap; }
 
-main { padding: 16px; max-width: 1100px; margin: 0 auto; }
-.grid { display: grid; gap: 12px; }
-.grid.cols2 { grid-template-columns: 1fr 1fr; }
-.grid.cols3 { grid-template-columns: repeat(3, 1fr); }
-@media (max-width: 800px) { .grid.cols2, .grid.cols3 { grid-template-columns: 1fr; } }
+/* ---- grids ----------------------------------------------------------------- */
+/* Auto-fit: the column count follows the available width. --col-min is the
+   narrowest a column may get before another one wraps. */
+.grid {
+  display: grid; gap: var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(var(--col-min, 320px), 1fr));
+  align-items: start;
+}
+.grid--s { --col-min: 220px; }
+.grid--l { --col-min: 420px; }
+.grid--xl { --col-min: 560px; }
+/* Fixed columns for paired layouts that must stay side by side while wide. */
+.grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+@media (max-width: 900px) { .grid--2 { grid-template-columns: 1fr; } }
+.stack { display: flex; flex-direction: column; gap: var(--s3); }
+.row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
+.row .label { color: var(--dim); font-size: var(--t-sm); flex: 0 0 auto; }
+.grow { flex: 1 1 auto; min-width: 0; }
+.between { justify-content: space-between; }
+.wrap-none { flex-wrap: nowrap; }
 
-.card { background: var(--panel); border: 1px solid var(--line);
-        border-radius: 8px; padding: 12px 14px; }
-.card h2 { margin-bottom: 10px; }
-.row { display: flex; gap: 10px; align-items: center; }
-.row + .row { margin-top: 8px; }
-.row .label { color: var(--dim); min-width: 110px; font-size: 13px; }
-.row .val { font-size: 14px; }
-.grow { flex: 1; }
-table { width: 100%; border-collapse: collapse; font-size: 13px; }
-th { text-align: left; color: var(--dim); font-weight: 500; padding: 6px 8px;
-     border-bottom: 1px solid var(--line); }
-td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+/* ---- card ------------------------------------------------------------------ */
+.card {
+  background: var(--panel); border: 1px solid var(--line);
+  border-radius: var(--r); padding: var(--s3) var(--s4); min-width: 0;
+}
+.card + .card { margin-top: var(--s3); }
+.card-head {
+  display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
+  margin-bottom: var(--s3);
+}
+.card-head h2 { margin: 0; }
+.card-head .actions { margin-left: auto; display: flex; gap: var(--s2); align-items: center; }
+.card--flush { padding: 0; overflow: hidden; }
+.card--flush > .card-head, .card--flush > .card-body { padding-inline: var(--s4); }
+.card--flush > .card-head { padding-top: var(--s3); }
+.card--accent { border-left: 3px solid var(--acc); }
+.card--warn { border-left: 3px solid var(--warn); }
+
+/* ---- tables ---------------------------------------------------------------- */
+/* The wrapper is what scrolls, so a wide table never breaks the page and the
+   header stays visible over a long body. */
+.tablewrap { overflow: auto; max-height: var(--tmax, none); }
+table { width: 100%; border-collapse: collapse; font-size: var(--t-sm); }
+th {
+  position: sticky; top: 0; z-index: 1; background: var(--panel);
+  text-align: left; color: var(--dim); font-weight: 500;
+  padding: var(--s2) var(--s2); border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+td { padding: var(--s2); border-bottom: 1px solid var(--line); vertical-align: middle; }
 tr:last-child td { border-bottom: none; }
+th.num, td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* Ellipsis needs a real ceiling: max-width:1px (the flex trick) collapses a
+   table column to nothing. Long cell content caps at ~22 characters and the
+   wrapper scrolls if the table still wants more room. */
+td.truncate, th.truncate { max-width: 22ch; overflow: hidden;
+                           text-overflow: ellipsis; white-space: nowrap; }
+.tablewrap table th:first-child, .tablewrap table td:first-child { padding-left: var(--s3); }
+.empty { color: var(--dim); font-size: var(--t-sm); padding: var(--s3) 0; }
 
-/* status badges */
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px;
-         font-size: 12px; font-family: var(--mono); border: 1px solid var(--line);
-         color: var(--dim); }
-.badge.running, .badge.ready { color: var(--ok); border-color: var(--ok); }
-.badge.queued { color: var(--acc); border-color: var(--acc); }
+/* ---- status badges --------------------------------------------------------- */
+.badge {
+  display: inline-block; padding: 1px 8px; border-radius: var(--r-pill);
+  font-size: var(--t-xs); font-family: var(--mono); border: 1px solid var(--line);
+  color: var(--dim); white-space: nowrap; line-height: 1.6;
+}
+.badge.running, .badge.ready, .badge.online, .badge.done_ok { color: var(--ok); border-color: var(--ok); }
+.badge.queued, .badge.selected { color: var(--acc); border-color: var(--acc); }
 .badge.done { color: var(--fg); }
-.badge.failed, .badge.killed, .badge.rejected { color: var(--err); border-color: var(--err); }
-.badge.uploading, .badge.preparing, .badge.finishing { color: var(--warn); border-color: var(--warn); }
-.badge.online { color: var(--ok); border-color: var(--ok); }
-.badge.offline { color: var(--err); border-color: var(--err); }
+.badge.failed, .badge.killed, .badge.rejected, .badge.offline, .badge.estop {
+  color: var(--err); border-color: var(--err);
+}
+.badge.uploading, .badge.preparing, .badge.finishing, .badge.disabled, .badge.paused {
+  color: var(--warn); border-color: var(--warn);
+}
 
-/* forms */
-label { display: block; margin: 10px 0 3px; font-size: 13px; color: var(--dim); }
-input, select, textarea { width: 100%; padding: 7px 9px; background: var(--bg);
-       color: var(--fg); border: 1px solid var(--line); border-radius: 6px; font: inherit; }
-input[type="checkbox"] { width: auto; }
-textarea { font-family: var(--mono); font-size: 13px; min-height: 60px; }
-button { margin-top: 10px; padding: 7px 14px; background: var(--acc); color: #04121c;
-         border: none; border-radius: 6px; font: inherit; font-weight: 600; cursor: pointer; }
-button:hover { filter: brightness(1.1); }
-button.secondary { background: var(--panel2); color: var(--fg); border: 1px solid var(--line); }
+/* ---- forms ----------------------------------------------------------------- */
+/* A field is label + control + hint. Two controls on one line use .field-row
+   instead of a .row with inline widths. */
+.field { display: block; margin-bottom: var(--s3); min-width: 0; }
+.field > .label, .field > label {
+  display: block; margin: 0 0 var(--s1); font-size: var(--t-sm); color: var(--dim);
+}
+.field .hint { font-size: var(--t-xs); color: var(--dim); margin-top: 2px; }
+.field-row { display: flex; flex-wrap: wrap; gap: var(--s3); }
+.field-row > .field { flex: 1 1 140px; }
+input, select, textarea {
+  width: 100%; padding: 7px 9px; background: var(--bg); color: var(--fg);
+  border: 1px solid var(--line); border-radius: var(--r-sm); font: inherit;
+  min-width: 0;
+}
+input:hover, select:hover, textarea:hover { border-color: #3b475a; }
+input[type="checkbox"], input[type="radio"] { width: auto; accent-color: var(--acc); }
+input[type="file"] { padding: 6px; font-size: var(--t-sm); }
+input:disabled, select:disabled, textarea:disabled { opacity: .5; cursor: not-allowed; }
+textarea { font-family: var(--mono); font-size: var(--t-sm); min-height: 72px; resize: vertical; }
+.check { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-sm); color: var(--dim); }
+.check input { margin: 0; }
+.unit { display: flex; align-items: center; gap: var(--s2); }
+.unit input { flex: 1 1 auto; }
+.unit .suffix { color: var(--dim); font-size: var(--t-xs); white-space: nowrap; }
+
+button {
+  padding: 7px 14px; background: var(--acc); color: #04121c; border: 1px solid transparent;
+  border-radius: var(--r-sm); font: inherit; font-weight: 600; cursor: pointer;
+  white-space: nowrap;
+}
+button:hover:not(:disabled) { filter: brightness(1.12); }
+button:active:not(:disabled) { transform: translateY(1px); }
+button.secondary { background: var(--panel2); color: var(--fg); border-color: var(--line); }
 button.danger { background: var(--err); color: #fff; }
+button.ghost { background: transparent; color: var(--fg); border-color: var(--line); }
+button.sm { padding: 3px 9px; font-size: var(--t-xs); }
+button.lg { padding: 10px 18px; font-size: var(--t-lg); }
+button.block { width: 100%; }
 button:disabled { opacity: .45; cursor: default; }
-details { margin-top: 10px; }
-summary { cursor: pointer; color: var(--dim); font-size: 13px; }
+.btn-row { display: flex; flex-wrap: wrap; gap: var(--s2); align-items: center; }
+.btn-row.end { justify-content: flex-end; }
 
-/* toast + flash */
-#toast { position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
-         background: var(--panel2); border: 1px solid var(--line); padding: 8px 16px;
-         border-radius: 8px; opacity: 0; transition: opacity .2s; pointer-events: none;
-         font-size: 14px; max-width: 80vw; }
+details { margin-top: var(--s3); }
+summary { cursor: pointer; color: var(--dim); font-size: var(--t-sm); }
+summary:hover { color: var(--fg); }
+details[open] > summary { margin-bottom: var(--s2); }
+
+/* tabs (page-local sections without a router) */
+.tabs { display: flex; gap: var(--s1); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.tabs button {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  color: var(--dim); border-radius: 0; padding: var(--s2) var(--s3); font-weight: 500;
+}
+.tabs button.active { color: var(--acc); border-bottom-color: var(--acc); }
+.tabs button:hover:not(.active) { color: var(--fg); }
+
+/* ---- meters, sparklines, media -------------------------------------------- */
+.bar {
+  height: 8px; background: var(--bg); border-radius: var(--r-pill); overflow: hidden;
+  border: 1px solid var(--line);
+}
+.bar > i { display: block; height: 100%; background: var(--acc); transition: width .3s ease; }
+.bar.warn > i { background: var(--warn); }
+.bar.err > i { background: var(--err); }
+.bar.ok > i { background: var(--ok); }
+
+canvas.chart {
+  display: block; width: 100%; height: var(--h, 110px);
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+
+/* Robot camera frame: keep the sensor's 4:3 shape, fill the column, no
+   letterboxing artifacts (object-fit contain, dark backdrop). */
+.frame {
+  display: block; width: 100%; aspect-ratio: 4 / 3; max-height: 420px;
+  object-fit: contain; background: #05080c;
+  border: 1px solid var(--line); border-radius: var(--r-sm);
+}
+.frame--sm { max-height: 180px; }
+
+pre.log {
+  background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
+  padding: var(--s2) var(--s3); font-family: var(--mono); font-size: var(--t-xs);
+  max-height: var(--lmax, 300px); overflow: auto; white-space: pre-wrap;
+  word-break: break-word; margin: var(--s2) 0 0;
+}
+
+kbd {
+  font-family: var(--mono); font-size: var(--t-xs); background: var(--panel2);
+  border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px;
+  padding: 1px 5px;
+}
+
+/* ---- metrics strip --------------------------------------------------------- */
+.metrics {
+  display: grid; gap: var(--s2) var(--s3);
+  grid-template-columns: repeat(auto-fit, minmax(96px, 1fr));
+}
+.metric .k { color: var(--dim); font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .04em; }
+.metric .v { font-size: var(--t-lg); font-variant-numeric: tabular-nums; }
+.metric .v.small { font-size: var(--t-md); }
+
+/* ---- toast + dialog -------------------------------------------------------- */
+#toast {
+  position: fixed; bottom: var(--s4); left: 50%; transform: translateX(-50%);
+  background: var(--panel2); border: 1px solid var(--line); padding: var(--s2) var(--s4);
+  border-radius: var(--r); opacity: 0; transition: opacity .2s; pointer-events: none;
+  font-size: var(--t-md); max-width: min(80vw, 620px); z-index: 100;
+}
 #toast.show { opacity: 1; }
 #toast.err { border-color: var(--err); }
+dialog {
+  background: var(--panel); color: var(--fg); border: 1px solid var(--line);
+  border-radius: var(--r); padding: var(--s4); max-width: min(92vw, 460px); width: 100%;
+}
+dialog::backdrop { background: rgba(0, 0, 0, .6); }
 
-/* logs + sparkline */
-pre.log { background: var(--bg); border: 1px solid var(--line); border-radius: 6px;
-          padding: 10px; font-family: var(--mono); font-size: 12px;
-          max-height: 300px; overflow: auto; white-space: pre-wrap; }
-canvas.spark { width: 100%; height: 90px; background: var(--bg);
-               border: 1px solid var(--line); border-radius: 6px; }
-.bar { height: 8px; background: var(--bg); border-radius: 4px; overflow: hidden;
-       border: 1px solid var(--line); }
-.bar > i { display: block; height: 100%; background: var(--acc); }
+/* ---- utilities ------------------------------------------------------------- */
 .muted { color: var(--dim); }
-.small { font-size: 12px; }
+.small { font-size: var(--t-sm); }
+.xs { font-size: var(--t-xs); }
+.bold { font-weight: 600; }
+.right { text-align: right; }
+.nowrap { white-space: nowrap; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hidden, [hidden] { display: none !important; }
+.mt0 { margin-top: 0; } .mt2 { margin-top: var(--s2); } .mt3 { margin-top: var(--s3); }
+.mt4 { margin-top: var(--s4); } .mb0 { margin-bottom: 0; }
+.ok { color: var(--ok); } .warn-text { color: var(--warn); } .err-text { color: var(--err); }
+.spacer { flex: 1 1 auto; }
+hr { border: none; border-top: 1px solid var(--line); margin: var(--s3) 0; }
+
+/* ---- endpoint picker cards (new run, endpoints board) ---------------------- */
+.endpoint { cursor: pointer; transition: border-color .15s, background .15s; }
+.endpoint:hover { border-color: var(--acc); }
+.endpoint.sel { border-color: var(--acc); background: var(--panel2); }
+.endpoint.locked { cursor: not-allowed; opacity: .72; }
+.endpoint.locked:hover { border-color: var(--warn); }
+.endpoint input[type="radio"] { accent-color: var(--acc); flex: 0 0 auto; }
+
+/* Legacy class names still referenced by pages during the migration. */
+.cols2 { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
+.cols3 { display: grid; gap: var(--s3); grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.spark { display: block; width: 100%; height: 110px; background: var(--bg);
+         border: 1px solid var(--line); border-radius: var(--r-sm); }
+
+@media (max-width: 640px) {
+  :root { --t-h1: 19px; --s4: 12px; --s5: 16px; }
+  .card { padding: var(--s3); }
+  nav .who { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
 @media print {
-  nav, button, #toast { display: none !important; }
+  nav, button, #toast, .tabs, .actions { display: none !important; }
   body { background: #fff; color: #000; }
-  .card { border-color: #ccc; background: #fff; }
+  .card { border-color: #ccc; background: #fff; break-inside: avoid; }
+  th { background: #fff; color: #333; }
+  .container { max-width: none; padding: 0; }
 }

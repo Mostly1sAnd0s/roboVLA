@@ -8,36 +8,55 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Dashboard</h1>
-  <div class="grid cols2">
+<main class="container">
+  <div class="page-head">
+    <h1>Dashboard</h1>
+    <span class="muted small" id="who"></span>
+    <div class="actions"><a href="/ui/new-run.html"><button>+ New run</button></a></div>
+  </div>
+
+  <div class="metrics card mt0" id="summary"></div>
+
+  <div class="grid mt3">
     <div class="card">
-      <h2>My queue position</h2>
+      <div class="card-head"><h2>My queue</h2>
+        <div class="actions"><a class="small" href="/ui/class-board.html">class →</a></div>
+      </div>
       <div id="queue"></div>
     </div>
     <div class="card">
-      <h2>Nodes (live)</h2>
-      <table id="nodes"><thead><tr>
-        <th>node</th><th>state</th><th>free VRAM</th><th>queue</th>
-      </tr></thead><tbody></tbody></table>
+      <div class="card-head"><h2>Training endpoints</h2>
+        <div class="actions"><a class="small" href="/ui/endpoints.html">all →</a></div>
+      </div>
+      <div class="tablewrap"><table id="nodes"><thead><tr>
+        <th>node</th><th>state</th><th class="num">free VRAM</th><th class="num">queue</th>
+      </tr></thead><tbody></tbody></table></div>
+    </div>
+  </div>
+
+  <div class="grid mt3">
+    <div class="card">
+      <div class="card-head"><h2>My runs</h2>
+        <div class="actions"><a class="small" href="/ui/new-run.html">new →</a></div>
+      </div>
+      <div class="tablewrap" style="--tmax:340px"><table id="runs"><thead><tr>
+        <th>job</th><th>type</th><th class="truncate">dataset</th><th>state</th>
+        <th class="num">progress</th><th>node</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
-      <h2>My runs</h2>
-      <table id="runs"><thead><tr>
-        <th>job</th><th>type</th><th>dataset</th><th>state</th><th>progress</th><th>node</th>
-      </tr></thead><tbody></tbody></table>
-      <a href="/ui/new-run.html">+ New run</a>
+      <div class="card-head"><h2>My datasets</h2>
+        <div class="actions"><a class="small" href="/ui/datasets.html">manage →</a></div>
+      </div>
+      <div class="tablewrap" style="--tmax:340px"><table id="datasets"><thead><tr>
+        <th class="truncate">dataset</th><th class="num">episodes</th>
+        <th class="num">size</th><th>state</th>
+      </tr></thead><tbody></tbody></table></div>
     </div>
     <div class="card">
-      <h2>My datasets</h2>
-      <table id="datasets"><thead><tr>
-        <th>dataset</th><th>episodes</th><th>size</th><th>state</th>
-      </tr></thead><tbody></tbody></table>
-      <a href="/ui/datasets.html">Manage datasets →</a>
-    </div>
-    <div class="card grow">
-      <h2>Class activity <span class="muted small">(live feed)</span></h2>
-      <div id="feed" class="small" style="max-height:280px; overflow:auto"></div>
+      <div class="card-head"><h2>Class activity</h2>
+        <span class="muted xs">live (SSE)</span></div>
+      <div id="feed" class="small" style="--lmax:340px; max-height:340px; overflow:auto"></div>
     </div>
   </div>
 </main>
@@ -48,41 +67,55 @@
 const user = await me();
 if (!user) location.href = "/ui/login.html";
 nav("index.html", user);
+$("#who").textContent = `${user.user_id} · ${user.role} · ` +
+  `${user.limits.max_running} running / ${user.limits.max_queued} queued`;
 
 async function loadStatic() {
   const [q, h, runs, dsets] = await Promise.all([
     api("/api/runs/queue"), api("/api/health"),
     api("/api/runs"), api("/api/datasets"),
   ]);
+  const running = q.queue.filter(j => j.state === "running" || j.state === "finishing").length;
+  const queued = q.queue.filter(j => j.state === "queued").length;
+  const ready = dsets.datasets.filter(d => d.status === "ready").length;
+  $("#summary").innerHTML = [
+    ["running now", running], ["in queue", queued],
+    ["my ready datasets", ready],
+    ["endpoints online", `${h.nodes.filter(n => n.online).length}/${h.nodes.filter(n => n.enabled).length}`],
+    ["maintenance", h.service.maintenance ? "ON" : "off"],
+  ].map(([k, v]) => `<div class="metric"><div class="k">${k}</div>
+      <div class="v">${esc(String(v))}</div></div>`).join("");
+
   const mine = q.queue.filter(j => j.student === user.user_id);
   $("#queue").innerHTML = mine.length
-    ? mine.map(j => `<div class="row"><span class="label">${esc(j.job_id)}
-        ${badge(j.state)}</span>
-        <span class="val">${j.state === "queued"
+    ? mine.map(j => `<div class="row" style="padding:3px 0">
+        <span class="mono xs">${esc(j.job_id)}</span> ${badge(j.state)}
+        <span class="grow right muted small">${j.state === "queued"
           ? `position ${j.position} · ETA ${fmtEta(j.eta_s)}`
           : `on ${esc(j.node_id ?? "?")}`}</span></div>`).join("")
-    : `<span class="muted">Nothing in the queue — <a href="/ui/new-run.html">submit a run</a>.</span>`;
+    : `<div class="empty">Nothing in the queue — <a href="/ui/new-run.html">submit a run</a>.</div>`;
 
-  $("#nodes tbody").innerHTML = h.nodes.map(n => `<tr>
-      <td>${esc(n.label ?? n.id)}</td>
+  $("#nodes tbody").innerHTML = h.nodes.filter(n => n.enabled).map(n => `<tr>
+      <td>${esc(n.label ?? n.id)}<div class="muted xs mono">${esc(shortModel(n.model))}</div></td>
       <td>${badge(n.online ? "online" : "offline")}</td>
-      <td>${n.free_gb != null ? `${n.free_gb.toFixed(1)} / ${n.vram_gb} GB` : "—"}</td>
-      <td>${n.queue_depth}</td></tr>`).join("");
+      <td class="num">${n.free_gb != null ? `${n.free_gb.toFixed(1)} / ${n.vram_gb} GB` : "—"}</td>
+      <td class="num">${n.queue_depth}</td></tr>`).join("")
+    || `<tr><td colspan="4" class="muted">no enabled nodes</td></tr>`;
 
   $("#runs tbody").innerHTML = runs.runs.map(j => `<tr>
       <td><a class="mono" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
       <td>${esc(j.job_type)}</td>
-      <td class="muted small">${esc(j.dataset)}</td>
+      <td class="muted xs truncate">${esc(j.dataset)}</td>
       <td>${badge(j.state)}</td>
-      <td>${j.progress && j.progress.step != null
-        ? `${j.progress.step}/${j.progress.total}` : "—"}</td>
+      <td class="num">${j.progress && j.progress.step != null
+        ? `${j.progress.step}/${j.progress.total ?? "?"}` : "—"}</td>
       <td class="muted">${esc(j.node_id ?? "auto")}</td></tr>`).join("")
     || `<tr><td colspan="6" class="muted">No runs yet.</td></tr>`;
 
   $("#datasets tbody").innerHTML = dsets.datasets.map(d => `<tr>
-      <td class="mono small">${esc(d.dataset_id)}</td>
-      <td>${d.episode_count ?? "—"}</td>
-      <td>${fmtBytes(d.total_bytes)}</td>
+      <td class="mono xs truncate">${esc(d.dataset_id)}</td>
+      <td class="num">${d.episode_count ?? "—"}</td>
+      <td class="num">${fmtBytes(d.total_bytes)}</td>
       <td>${badge(d.status)}</td></tr>`).join("")
     || `<tr><td colspan="4" class="muted">No datasets — <a href="/ui/datasets.html">upload one</a>.</td></tr>`;
 }
@@ -95,11 +128,11 @@ const FEED = {
   config: j => `fleet config changed (${j.changes.length} field(s))`,
   dataset: j => `dataset ${j.event}: ${j.dataset_id}`,
 };
-const close = sse("class", (t, d) => {
+sse("class", (t, d) => {
   const line = FEED[t] ? FEED[t](d) : `${t}: ${JSON.stringify(d).slice(0, 80)}`;
   const el = document.createElement("div");
   el.className = "row";
-  el.innerHTML = `<span class="muted mono">${new Date().toISOString().slice(11, 19)}</span>
+  el.innerHTML = `<span class="muted mono xs">${new Date().toISOString().slice(11, 19)}</span>
                   <span class="grow">${esc(line)}</span>`;
   const feed = $("#feed");
   feed.prepend(el);
@@ -107,7 +140,7 @@ const close = sse("class", (t, d) => {
 });
 
 loadStatic().catch(err => toast(err.message, true));
-setInterval(loadStatic, 15000); // queue/positions refresh; live events come via SSE
+poll(loadStatic, 15000);   // positions refresh; live events come via SSE
 })();
 </script>
 </body>

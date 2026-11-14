@@ -8,32 +8,42 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>Datasets</h1>
-  <div class="grid cols2">
+<main class="container">
+  <div class="page-head">
+    <h1>Datasets</h1>
+    <span class="muted small">upload → QA gate → norm stats → ready</span>
+  </div>
+
+  <div class="grid grid--2">
     <div class="card">
-      <h2>Upload a dataset zip</h2>
-      <p class="small muted">
-        One task per zip: <code>episodes/ep_NNNN/frames/*.jpg</code> +
-        <code>actions.json</code> + <code>episode.json</code> (10 Hz capture).
-        Uploaded in 8 MB chunks; the console re-checks the whole-zip sha256.
-      </p>
-      <label for="file">Zip file</label>
-      <input type="file" id="file" accept=".zip">
-      <label for="dsid">Dataset id (owner / task / version)</label>
-      <input id="dsid" placeholder="e.g. s01/stop-at-target/v1">
-      <div id="upload-progress" style="display:none">
+      <div class="card-head"><h2>Upload a dataset zip</h2></div>
+      <p class="small muted">One task per zip:
+        <code>episodes/ep_NNNN/frames/*.jpg</code> + <code>actions.json</code> +
+        <code>episode.json</code> (10 Hz capture). Uploaded in 8 MB chunks; the
+        console re-checks the whole-zip sha256.</p>
+      <div class="field"><label for="file">Zip file</label>
+        <input type="file" id="file" accept=".zip"></div>
+      <div class="field"><label for="dsid">Dataset id (owner / task / version)</label>
+        <input id="dsid" placeholder="e.g. s01/stop-at-target/v1"></div>
+      <div id="upload-progress" class="hidden">
         <div class="bar"><i id="upfill" style="width:0%"></i></div>
         <div class="small muted" id="uptext">…</div>
       </div>
-      <button id="up" disabled>Upload + prep</button>
-      <pre id="uplog" class="log" style="display:none; max-height:160px"></pre>
+      <div class="btn-row mt2">
+        <button id="up" disabled>Upload + prep</button>
+        <span class="xs muted" id="upname"></span>
+      </div>
+      <pre id="uplog" class="log hidden" style="--lmax:180px"></pre>
     </div>
+
     <div class="card">
-      <h2>My datasets</h2>
-      <div id="list" style="max-height:420px; overflow:auto"></div>
+      <div class="card-head"><h2>My datasets</h2>
+        <span class="muted xs" id="dscount"></span></div>
+      <div id="list" style="max-height:460px; overflow:auto"></div>
     </div>
   </div>
+
+  <div id="details"></div>
 </main>
 <script src="/ui/vendor/htmx.min.js"></script>
 <script src="/ui/app.js"></script>
@@ -46,7 +56,7 @@ const CHUNK = 8 * 1024 * 1024;
 
 function uplog(line, cls = "") {
   const el = $("#uplog");
-  el.style.display = "block";
+  el.classList.remove("hidden");
   const d = document.createElement("div");
   d.className = cls;
   d.textContent = line;
@@ -60,7 +70,9 @@ async function sha256Hex(buf) {
 }
 
 $("#file").addEventListener("change", () => {
-  $("#up").disabled = !$("#file").files.length;
+  const f = $("#file").files[0];
+  $("#up").disabled = !f;
+  $("#upname").textContent = f ? `${f.name} · ${fmtBytes(f.size)}` : "";
 });
 
 $("#up").addEventListener("click", async () => {
@@ -68,16 +80,15 @@ $("#up").addEventListener("click", async () => {
   const dsid = $("#dsid").value.trim();
   if (!f || !dsid) { toast("pick a zip and a dataset id", true); return; }
   if (!dsid.startsWith(user.user_id + "/")) {
-    toast(`dataset id must start with your id (${user.user_id}/…)` , true); return;
+    toast(`dataset id must start with your id (${user.user_id}/…)`, true); return;
   }
   $("#up").disabled = true;
-  uplog(""); $("#uplog").style.display = "block";
-  $("#upload-progress").style.display = "block";
+  $("#upload-progress").classList.remove("hidden");
   try {
     const blob = await f.arrayBuffer();
     const sha = await sha256Hex(blob);
     const n = Math.max(1, Math.ceil(blob.byteLength / CHUNK));
-    uplog(`file ${f.name} — ${fmtBytes(blob.byteLength)}, sha256 ${sha.slice(0, 16)}…, ${n} chunk(s)`);
+    uplog(`file ${fmtBytes(blob.byteLength)}, sha256 ${sha.slice(0, 16)}…, ${n} chunk(s)`);
     for (let i = 0; i < n; i++) {
       const fd = new FormData();
       fd.append("dataset_id", dsid);
@@ -91,15 +102,13 @@ $("#up").addEventListener("click", async () => {
     }
     $("#uptext").textContent = "finalizing (extract + QA + stats + split)…";
     const rep = await api("/api/datasets/upload/finalize", {
-      method: "POST", body: { dataset_id: dsid, total_chunks: n, sha256: sha },
-    });
+      method: "POST", body: { dataset_id: dsid, total_chunks: n, sha256: sha } });
     $("#upfill").style.width = "100%";
-    uplog(`status: ${rep.status}${rep.status === "failed" ? " — QA gate failed, see details" : ""}`);
-    if (rep.status === "ready")
-      uplog(`ready: ${rep.qa.summary.episode_count} episodes`, "ok");
+    uplog(`status: ${rep.status}`, rep.status === "ready" ? "ok" : "err-text");
+    if (rep.status !== "ready") uplog("QA gate failed — open the dataset for the exact rule");
     loadList();
   } catch (err) {
-    uplog(`ERROR: ${err.message}`, "err");
+    uplog(`ERROR: ${err.message}`, "err-text");
   } finally {
     $("#up").disabled = false;
   }
@@ -107,21 +116,19 @@ $("#up").addEventListener("click", async () => {
 
 async function loadList() {
   const { datasets } = await api("/api/datasets");
+  $("#dscount").textContent = `${datasets.length} total`;
   $("#list").innerHTML = datasets.length ? datasets.map(d =>
-    `<div class="row" style="border-bottom:1px solid var(--line); padding:8px 0">
-       <span class="grow mono small">${esc(d.dataset_id)}</span>
-       <span class="small muted">${d.episode_count ?? "—"} ep · ${fmtBytes(d.total_bytes)}</span>
+    `<div class="row" style="border-bottom:1px solid var(--line); padding:var(--s2) 0">
+       <span class="grow mono small truncate">${esc(d.dataset_id)}</span>
+       <span class="xs muted nowrap">${d.episode_count ?? "—"} ep · ${fmtBytes(d.total_bytes)}</span>
        ${badge(d.status)}
-       ${d.status === "ready"
-         ? `<a href="#" data-ds="${esc(d.dataset_id)}">details</a>` : ""}
+       <button class="ghost sm" data-ds="${esc(d.dataset_id)}">details</button>
      </div>`).join("")
-    : `<span class="muted">No datasets yet.</span>`;
-  $$("[data-ds]").forEach(a => a.addEventListener("click", async (e) => {
-    e.preventDefault();
-    await showDetail(a.dataset.ds);
-  }));
+    : `<div class="empty">No datasets yet — upload a zip on the left.</div>`;
+  $$("[data-ds]").forEach(b => b.addEventListener("click", () => showDetail(b.dataset.ds)));
 }
 
+const DIMS = ["x", "y", "θ", "grip", "vx", "vy", "wz"];
 async function showDetail(dsid) {
   const [ds, qa, ns] = await Promise.all([
     api(`/api/datasets/${encodeURIComponent(dsid)}`),
@@ -129,30 +136,43 @@ async function showDetail(dsid) {
     api(`/api/datasets/${encodeURIComponent(dsid)}/norm-stats`).catch(() => null),
   ]);
   const s = qa.qa.summary;
-  const dims = ["x", "y", "θ", "grip", "vx", "vy", "wz"];
   const el = document.createElement("div");
-  el.className = "card";
+  el.className = "card mt3";
   el.innerHTML = `
-    <h2>${esc(dsid)} ${badge(qa.qa.status)}</h2>
-    <p class="small">episodes ${s.episode_count} · ok ${s.ok} · warned ${s.warned} · failed ${s.failed}
-       ${ds.rejected_reason ? ` · <span style="color:var(--err)">rejected: ${esc(ds.rejected_reason)}</span>` : ""}
-    </p>
-    <table><thead><tr><th>dim</th><th>min</th><th>max</th></tr></thead><tbody>
-    ${ns ? ns.norm_stats.min.map((m, i) =>
-      `<tr><td>${dims[i] ?? i}</td><td>${m.toFixed(3)}</td><td>${ns.norm_stats.max[i].toFixed(3)}</td></tr>`).join("") : ""}
-    </tbody></table>
-    <p class="small muted">issues:</p>
-    <ul class="small">
-      ${qa.qa.issues.slice(0, 8).map(i =>
-        `<li class="${i.severity === "fail" ? "" : "muted"}">[${i.severity}]
-         ${i.episode_id ? esc(i.episode_id) : "dataset"} — ${esc(i.rule)}: ${esc(i.detail)}</li>`).join("")
-       || "<li class='muted'>none</li>"}
-    </ul>
+    <div class="card-head"><h2>${esc(dsid)}</h2> ${badge(qa.qa.status)}
+      <div class="actions"><button class="ghost sm" data-close>close</button></div></div>
+    <div class="metrics">
+      ${[["episodes", s.episode_count], ["ok", s.ok], ["warned", s.warned],
+         ["failed", s.failed]].map(([k, v]) =>
+        `<div class="metric"><div class="k">${k}</div><div class="v small">${v}</div></div>`).join("")}
+    </div>
+    ${ds.rejected_reason ? `<p class="small err-text">rejected: ${esc(ds.rejected_reason)}</p>` : ""}
+    <div class="grid grid--2 mt3">
+      <div>
+        <h3 class="small muted">normalization stats (the numbers training uses)</h3>
+        <div class="tablewrap"><table>
+          <thead><tr><th>dim</th><th class="num">min</th><th class="num">max</th></tr></thead>
+          <tbody>${ns ? ns.norm_stats.min.map((m, i) =>
+            `<tr><td>${DIMS[i] ?? i}</td><td class="num">${m.toFixed(3)}</td>
+             <td class="num">${ns.norm_stats.max[i].toFixed(3)}</td></tr>`).join("") :
+            '<tr><td colspan="3" class="muted">not computed yet</td></tr>'}</tbody>
+        </table></div>
+      </div>
+      <div>
+        <h3 class="small muted">QA issues</h3>
+        <ul class="small" style="margin:0; padding-left:18px">
+          ${qa.qa.issues.slice(0, 12).map(i =>
+            `<li class="${i.severity === "fail" ? "" : "muted"}">[${i.severity}]
+             ${i.episode_id ? esc(i.episode_id) : "dataset"} — ${esc(i.rule)}: ${esc(i.detail)}</li>`).join("")
+           || `<li class="muted">none — the gate is clean</li>`}
+        </ul>
+      </div>
+    </div>
     <details><summary>revalidate (re-run QA/stats/split after a fix)</summary>
-      <button class="secondary" data-re="${esc(dsid)}">Revalidate</button>
+      <button class="secondary mt2" data-re="${esc(dsid)}">Revalidate</button>
     </details>`;
-  document.querySelector("main").append(el);
-  el.scrollIntoView({ behavior: "smooth" });
+  $("#details").replaceChildren(el);
+  el.querySelector("[data-close]").addEventListener("click", () => { $("#details").innerHTML = ""; });
   el.querySelector("[data-re]").addEventListener("click", async () => {
     try {
       const r = await api(`/api/datasets/${encodeURIComponent(dsid)}/revalidate`, { method: "POST" });
@@ -160,6 +180,7 @@ async function showDetail(dsid) {
       loadList();
     } catch (err) { toast(err.message, true); }
   });
+  el.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 
 loadList().catch(err => toast(err.message, true));

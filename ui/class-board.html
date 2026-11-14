@@ -8,22 +8,22 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
+<main class="container">
   <div class="row" style="margin-bottom:10px">
-    <h1 class="grow">Class board</h1>
+    <div class="page-head"><h1 class="grow">Class board</h1></div>
     <button class="secondary" onclick="window.print()">print</button>
   </div>
   <div class="grid cols3" id="summary"></div>
   <div class="grid cols2" style="margin-top:12px">
     <div class="card">
       <h2>Queue (all students, live)</h2>
-      <table id="queue"><thead><tr>
+      <div class="tablewrap"><table id="queue"><thead><tr>
         <th>job</th><th>student</th><th>type</th><th>state</th><th>pos</th><th>ETA</th>
       </tr></thead><tbody></tbody></table>
     </div>
     <div class="card">
       <h2>Inference slots</h2>
-      <table id="slots"><thead><tr>
+      <div class="tablewrap"><table id="slots"><thead><tr>
         <th>slot job</th><th>student</th><th>run</th><th>state</th><th>pos</th>
       </tr></thead><tbody></tbody></table>
       <h2 style="margin-top:14px">Nodes</h2>
@@ -32,7 +32,7 @@
   </div>
   <div class="card" style="margin-top:12px" id="allcard">
     <h2>All runs</h2>
-    <table id="all"><thead><tr>
+    <div class="tablewrap"><table id="all"><thead><tr>
       <th>job</th><th>student</th><th>type</th><th>dataset</th><th>state</th><th>node</th><th>submitted</th>
     </tr></thead><tbody></tbody></table>
   </div>
@@ -95,7 +95,7 @@ async function load() {
   }
 }
 load().catch(err => toast(err.message, true));
-setInterval(load, 10000);
+poll(load, 10000);
 })();
 </script>
 </body>
