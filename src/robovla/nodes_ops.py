@@ -8,6 +8,8 @@ from __future__ import annotations
 from typing import Any
 
 from .core.errors import RobovlaError
+from .core.scheduler import default_duration_s
+from .core.spec import model_family
 from .service import ConsoleService
 
 
@@ -28,6 +30,67 @@ def gpu_view(svc: ConsoleService) -> dict[str, Any]:
             "orphan_alert": bool(orphans),
             "orphan_pids": [p.get("pid") for p in orphans],
         }
+    return out
+
+
+def endpoint_board(svc: ConsoleService, *, job_type: str = "train",
+                   batch: int | None = None, epochs: int | None = None,
+                   is_teacher: bool = False) -> list[dict[str, Any]]:
+    """The training-endpoint board (§7.3): one row per node with measured
+    load, both queues (pinned vs auto), and the wait a job of the caller's
+    shape would face there.
+
+    Students use this to choose which queue to join; the choice itself is
+    still the submit-time ``node_id`` gate of §9.3 (``student_selectable``,
+    §8.2) — this view tells the truth about why a node is not pickable
+    rather than hiding it.
+    """
+    states = {n.id: svc.node_state(n.id) for n in svc.fleet.enabled_nodes()}
+    out = []
+    for node in svc.fleet.nodes_by_priority():
+        st = svc.node_state(node.id)
+        q = svc.scheduler.node_queue(node.id)
+        # why this endpoint is not pickable right now, in plain words (§7.3):
+        # busy is a WAIT (eta_start_s), never a refusal
+        reasons: list[str] = []
+        if not node.enabled:
+            reasons.append("disabled")
+        elif not st.online:
+            reasons.append("offline")
+        elif not is_teacher and not node.student_selectable:
+            reasons.append("teacher has not opened this node to students")
+        elif batch is not None and batch not in node.presets.batch:
+            reasons.append(f"batch {batch} is not in this node's presets")
+        # the caller's job shape, priced on THIS node
+        est_run_s = None
+        if job_type in ("train", "crosscheck") and batch and epochs:
+            est_run_s = round(default_duration_s(job_type, batch, epochs))
+        wait = (svc.scheduler.wait_for_new_s(
+            node.id, job_type, family=model_family(node.model), node_states=states)
+            if job_type else None)
+        eta_start_s = round(wait) if wait is not None else None
+        out.append({
+            "id": node.id, "label": node.label, "model": node.model,
+            "quant": node.gpu.quant, "vram_gb": node.gpu.vram_gb,
+            "free_gb": round(st.free_vram_gb, 2),
+            "used_gb": round(max(0.0, node.gpu.vram_gb - st.free_vram_gb), 2),
+            "used_pct": round(100.0 * (1 - st.free_vram_gb / node.gpu.vram_gb), 1)
+            if node.gpu.vram_gb else 0.0,
+            "online": st.online, "enabled": node.enabled,
+            "priority": node.priority,
+            "batch_presets": list(node.presets.batch),
+            "train_slots": node.gpu.train_slots, "train_used": q["train_used"],
+            "infer_slots": node.gpu.infer_slots, "infer_used": q["infer_used"],
+            "running": q["running"], "queued": q["queued"],
+            "auto_queued": q["auto_queued"],
+            "student_selectable": node.student_selectable,
+            "selectable": not reasons,
+            "reasons": reasons,
+            "est_run_s": est_run_s,
+            "eta_start_s": eta_start_s,
+            # teacher-only: the agent endpoint (debugging, §8.2)
+            "agent": (f"{node.agent.lan_ip}:{node.agent.port}") if is_teacher else None,
+        })
     return out
 
 

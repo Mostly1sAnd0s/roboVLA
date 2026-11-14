@@ -8,52 +8,89 @@
 </head>
 <body>
 <nav id="nav" hx-boost="true"></nav>
-<main>
-  <h1>New run</h1>
-  <div class="grid cols2">
-    <div class="card">
-      <h2>Submit</h2>
-      <label for="ds">Dataset (ready only)</label>
-      <select id="ds"></select>
-      <label for="type">Job type</label>
-      <select id="type">
-        <option value="smoke">smoke (fast, no ticket)</option>
-        <option value="train">train (needs an experiment ticket)</option>
-        <option value="validate">validate</option>
-        <option value="merge">merge</option>
-        <option value="crosscheck">crosscheck</option>
-      </select>
-      <label for="node">Node (auto = first-fit in priority order, §3)</label>
-      <select id="node"><option value="auto">auto</option></select>
-      <label for="batch">Batch</label>
-      <select id="batch"></select>
-      <details id="adv">
-        <summary>advanced (values from the class preset catalog — max_seq_len fixed at 287)</summary>
-        <label>rank</label><input id="rank" type="number" value="32">
-        <label>alpha</label><input id="alpha" type="number" value="32">
-        <label>lr</label><input id="lr" type="number" step="0.0001" value="0.0005">
-        <label>epochs</label><input id="epochs" type="number" value="1">
-        <label>image augmentation</label><input id="aug" type="checkbox" checked>
-        <label>seed</label><input id="seed" type="number" value="13">
-      </details>
-      <button id="go">Submit</button>
-      <div id="result" class="small" style="margin-top:10px"></div>
+<main class="container">
+  <div class="page-head">
+    <h1>New run</h1>
+    <div class="actions"><a class="small" href="/ui/endpoints.html">endpoint board →</a></div>
+  </div>
+
+  <div class="grid grid--2">
+    <div>
+      <div class="card">
+        <div class="card-head"><h2>1 · Job</h2></div>
+        <div class="field-row">
+          <div class="field"><label for="ds">Dataset (ready only)</label>
+            <select id="ds"></select></div>
+          <div class="field" style="flex:0 1 160px"><label for="type">Job type</label>
+            <select id="type">
+              <option value="smoke">smoke (fast, no ticket)</option>
+              <option value="train">train (ticket required)</option>
+              <option value="validate">validate</option>
+              <option value="merge">merge</option>
+              <option value="crosscheck">crosscheck</option>
+            </select></div>
+        </div>
+        <details>
+          <summary>advanced — values from the class preset catalog
+            (max_seq_len is fixed at 287)</summary>
+          <div class="field-row mt2">
+            <div class="field"><label for="rank">rank</label>
+              <input id="rank" type="number" value="32"></div>
+            <div class="field"><label for="alpha">alpha</label>
+              <input id="alpha" type="number" value="32"></div>
+            <div class="field"><label for="lr">lr</label>
+              <input id="lr" type="number" step="0.0001" value="0.0005"></div>
+            <div class="field"><label for="seed">seed</label>
+              <input id="seed" type="number" value="13"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="epochs">epochs</label>
+              <input id="epochs" type="number" value="1"></div>
+            <div class="field"><label class="check mt4" for="aug">
+              <input id="aug" type="checkbox" checked> image augmentation</label></div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>2 · Training endpoint</h2>
+          <span class="muted xs" id="endpnote"></span></div>
+        <div class="grid grid--s" id="endpoints"></div>
+        <div class="row mt3"><div id="batchWrap"></div></div>
+        <p class="xs muted mb0">Auto lets the scheduler first-fit across the
+          fleet (§3). A busy endpoint is a queue you can join, not a refusal.</p>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>3 · Submit</h2></div>
+        <div class="btn-row between">
+          <div class="row">
+            <label class="check"><input type="checkbox" id="runnow"> run now
+              (front of line after the current job)</label>
+          </div>
+          <button id="go">Submit run</button>
+        </div>
+        <div id="result" class="small mt3"></div>
+      </div>
     </div>
+
     <div class="card">
-      <h2>Experiment ticket <span class="muted small">(required for train — §9.3)</span></h2>
-      <label for="tk">Use an existing ticket</label>
-      <select id="tk"><option value="">— new ticket below —</option></select>
-      <label for="hyp">Hypothesis</label>
-      <textarea id="hyp" placeholder="e.g. rank 32 + aug captures the stop-at-target behavior…"></textarea>
-      <label for="cfg">Config summary</label>
-      <input id="cfg" placeholder="e.g. batch 4, 1 epoch, seed 13">
-      <label for="pred">Prediction</label>
-      <input id="pred" placeholder="e.g. held-out accuracy ≥ 0.6">
-      <div class="row">
+      <div class="card-head"><h2>Experiment ticket</h2>
+        <span class="muted xs">required for train (§9.3)</span></div>
+      <div class="field"><label for="tk">Use an existing (unlinked) ticket</label>
+        <select id="tk"><option value="">— new ticket below —</option></select></div>
+      <div class="field"><label for="hyp">Hypothesis</label>
+        <textarea id="hyp" placeholder="e.g. rank 32 + augmentation captures the stop-at-target behaviour"></textarea></div>
+      <div class="field"><label for="cfg">Config summary</label>
+        <input id="cfg" placeholder="e.g. batch 4, 1 epoch, seed 13"></div>
+      <div class="field"><label for="pred">Prediction</label>
+        <input id="pred" placeholder="e.g. held-out accuracy ≥ 0.6"></div>
+      <div class="btn-row">
         <button id="mk" class="secondary">Create ticket</button>
         <span class="muted small" id="tknote"></span>
       </div>
-      <p class="small muted" id="tklist" style="margin-top:14px"></p>
+      <hr>
+      <div class="xs muted" id="tklist"></div>
     </div>
   </div>
 </main>
@@ -65,95 +102,141 @@ const user = await me();
 if (!user) location.href = "/ui/login.html";
 nav("new-run.html", user);
 const isTeacher = user.role === "teacher";
+const preselect = new URLSearchParams(location.search).get("node");
 
-const [{ datasets }, h] = await Promise.all([api("/api/datasets"), api("/api/health")]);
-$("#ds").innerHTML = datasets
-  .filter(d => d.status === "ready")
-  .map(d => `<option value="${esc(d.dataset_id)}">${esc(d.dataset_id)} (${d.episode_count} ep)</option>`)
+const { datasets } = await api("/api/datasets");
+$("#ds").innerHTML = datasets.filter(d => d.status === "ready")
+  .map(d => `<option value="${esc(d.dataset_id)}">${esc(d.dataset_id)}
+      (${d.episode_count} episodes)</option>`)
   .join("") || `<option value="">no ready datasets — upload one first</option>`;
 
-// node options: auto + student-selectable (teacher: any enabled)
-const nodes = h.nodes.filter(n => n.enabled && (isTeacher || n.student_selectable));
-$("#node").innerHTML += nodes
-  .map(n => `<option value="${esc(n.id)}">${esc(n.label ?? n.id)} (${n.vram_gb} GB, ${esc((n.model || "").split("/").pop())})</option>`)
-  .join("");
-
-// batch options: the selected node's presets (auto: union of all enabled nodes)
-function refreshBatch() {
-  const nid = $("#node").value;
-  const opts = nid === "auto"
-    ? [...new Set(h.nodes.filter(n => n.enabled).flatMap(n => n.batch_presets))].sort((a, b) => a - b)
-    : h.nodes.find(n => n.id === nid)?.batch_presets ?? [];
-  $("#batch").innerHTML = opts.map(b => `<option>${b}</option>`).join("") || "<option>—</option>";
+/* ---- endpoint picker ------------------------------------------------------
+   One card per node with the live wait (GET /api/nodes), priced for the
+   batch/epochs on this form. "auto" stays an option and is the default. */
+let nodesCache = [];
+async function loadEndpoints() {
+  const type = $("#type").value;
+  const qs = new URLSearchParams({ job_type: type });
+  if (["train", "crosscheck"].includes(type)) {
+    // price the wait with the form's shape; batch presets differ per node, so
+    // the price uses batch 1 (the preset every node allows)
+    qs.set("batch", 1); qs.set("epochs", +$("#epochs").value || 1);
+  }
+  const { nodes } = await api(`/api/nodes?${qs}`);
+  nodesCache = nodes;
+  const cards = [`<label class="card endpoint ${!preselect ? "sel" : ""}" data-n="auto">
+      <div class="row between"><b>auto</b>
+        <input type="radio" name="node" value="auto" ${!preselect ? "checked" : ""}></div>
+      <div class="xs muted">first-fit across every enabled node that runs the
+        right model family (§3)</div>
+    </label>`]
+    .concat(nodes.filter(n => n.enabled || isTeacher).map(n => {
+      const wait = n.eta_start_s == null ? null
+        : (n.eta_start_s === 0 ? "free now" : `~${fmtEta(n.eta_start_s)} wait`);
+      return `<label class="card endpoint ${preselect === n.id ? "sel" : ""} ${
+          n.selectable ? "" : "locked"}" data-n="${esc(n.id)}">
+        <div class="row between"><b>${esc(n.label ?? n.id)}</b>
+          <input type="radio" name="node" value="${esc(n.id)}"
+            ${!n.selectable ? "disabled" : ""} ${preselect === n.id ? "checked" : ""}></div>
+        <div class="xs muted">${esc(shortModel(n.model))} · ${n.quant} ·
+          batch ${n.batch_presets.join("/")}</div>
+        <div class="bar ${n.used_pct > 90 ? "err" : n.used_pct > 60 ? "warn" : "ok"} mt2">
+          <i style="width:${Math.max(0, Math.min(100, n.used_pct))}%"></i></div>
+        <div class="row xs mt2">
+          <span class="muted">${n.free_gb}/${n.vram_gb} GB</span>
+          <span class="grow right ${n.train_used >= n.train_slots ? "warn-text" : "ok"}">${
+            n.queued.length} in line · ${wait ?? "unavailable"}</span>
+        </div>
+        ${n.selectable ? "" : `<div class="xs err-text mt2">${n.reasons.join(" · ")}</div>`}
+      </label>`;
+    }));
+  $("#endpoints").innerHTML = cards.join("");
+  if (preselect && !nodes.find(n => n.id === preselect && n.selectable)) {
+    toast(`endpoint ${preselect} is not selectable for you`, true);
+    $("#endpoints [data-n='auto'] input").checked = true;
+    $("#endpoints [data-n='auto']").classList.add("sel");
+  }
+  syncBatch();
+  $$("#endpoints input[name=node]").forEach(r => r.addEventListener("change", () => {
+    $$("#endpoints .endpoint").forEach(c =>
+      c.classList.toggle("sel", c.querySelector("input").checked));
+    syncBatch();
+  }));
 }
-$("#node").addEventListener("change", refreshBatch);
-refreshBatch();
+
+/* batch options = the chosen node's presets (auto: union of enabled nodes) */
+function syncBatch() {
+  const sel = $("#endpoints input[name=node]:checked")?.value ?? "auto";
+  const list = sel === "auto"
+    ? [...new Set(nodesCache.filter(n => n.enabled).flatMap(n => n.batch_presets))].sort((a, b) => a - b)
+    : nodesCache.find(n => n.id === sel)?.batch_presets ?? [];
+  const cur = $("#batchSel")?.value;
+  $("#endpnote").textContent = `${sel}: batch ${list.join("/") || "—"}`;
+  if (!list.length) { $("#batchWrap").innerHTML = ""; return; }
+  $("#batchWrap").innerHTML = `<div class="field" style="max-width:180px">
+    <label for="batchSel">Batch (allowed on ${esc(sel)})</label>
+    <select id="batchSel">${list.map(b => `<option ${b == cur ? "selected" : ""}>${b}</option>`).join("")}</select>
+  </div>`;
+}
 
 async function loadTickets() {
   const { tickets } = await api("/api/tickets");
-  const unlinked = tickets.filter(t => t.state === "unlinked");
+  const unlinked = tickets.filter(t => t.state === "unlinked" &&
+    (isTeacher || t.owner === user.user_id));
   $("#tk").innerHTML = `<option value="">— new ticket below —</option>` +
-    unlinked.map(t => `<option value="${esc(t.ticket_id)}">${esc(t.ticket_id)}</option>`).join("");
+    unlinked.map(t => `<option value="${esc(t.ticket_id)}">${esc(t.ticket_id)}
+      ${t.owner === user.user_id ? "" : `(${esc(t.owner)})`}</option>`).join("");
   $("#tklist").innerHTML = tickets.map(t =>
-    `<div class="row"><span class="mono small">${esc(t.ticket_id)}</span>
-     <span class="muted small">${esc(t.prediction ?? "").slice(0, 40)}</span>
-     ${badge(t.state)}${t.outcome ? ` <span class="small muted">→ ${esc(t.outcome).slice(0, 30)}</span>` : ""}</div>`
-  ).join("") || "No tickets yet.";
-  if (isTeacher) {
-    $("#tk").innerHTML += tickets.filter(t => t.state === "unlinked" && t.owner !== user.user_id)
-      .map(t => `<option value="${esc(t.ticket_id)}">${esc(t.ticket_id)} (for ${esc(t.owner)})</option>`).join("");
-  }
+    `<div class="row"><span class="mono xs">${esc(t.ticket_id)}</span>
+     <span class="muted xs truncate grow">${esc(t.prediction ?? "")}</span>
+     ${badge(t.state)}</div>`).join("") || "No tickets yet.";
 }
-loadTickets().catch(err => toast(err.message, true));
 
-$("#mk").addEventListener("click", async () => {
-  try {
-    const t = await api("/api/tickets", { method: "POST", body: {
-      hypothesis: $("#hyp").value, config_summary: $("#cfg").value,
-      prediction: $("#pred").value,
-    }});
-    toast(`ticket ${t.ticket_id} created`);
-    await loadTickets();
-    $("#tk").value = t.ticket_id;
-  } catch (err) { toast(err.message, true); }
-});
+async function createTicket() {
+  const t = await api("/api/tickets", { method: "POST", body: {
+    hypothesis: $("#hyp").value, config_summary: $("#cfg").value,
+    prediction: $("#pred").value }});
+  toast(`ticket ${t.ticket_id} created`);
+  await loadTickets();
+  $("#tk").value = t.ticket_id;
+}
+$("#mk").addEventListener("click", () => createTicket().catch(e => toast(e.message, true)));
 
 $("#go").addEventListener("click", async () => {
   const type = $("#type").value;
-  const body = {
-    dataset_id: $("#ds").value, job_type: type, node_id: $("#node").value,
-    config: { batch: +$("#batch").value },
-  };
+  const node = $("#endpoints input[name=node]:checked")?.value ?? "auto";
+  const body = { dataset_id: $("#ds").value, job_type: type, node_id: node,
+                 config: { batch: +($("#batchSel")?.value ?? 1) } };
+  if ($("#epochs").value) body.config.epochs = +$("#epochs").value;
+  if (document.querySelector("details").open) {
+    body.config.rank = +$("#rank").value; body.config.alpha = +$("#alpha").value;
+    body.config.lr = +$("#lr").value; body.config.image_aug = $("#aug").checked;
+    body.config.seed = +$("#seed").value;
+  }
   if (type === "train") {
     body.ticket_id = $("#tk").value;
     if (!body.ticket_id) { toast("train requires a ticket — pick or create one", true); return; }
   }
-  if (document.getElementById("adv").open) {
-    body.config.rank = +$("#rank").value;
-    body.config.alpha = +$("#alpha").value;
-    body.config.lr = +$("#lr").value;
-    body.config.epochs = +$("#epochs").value;
-    body.config.image_aug = $("#aug").checked;
-    body.config.seed = +$("#seed").value;
-  }
+  if ($("#runnow").checked) body.run_now = true;
   $("#go").disabled = true;
   try {
-    const r = await api("/api/runs", {
-      method: "POST", body,
-      headers: { "Idempotency-Key": crypto.randomUUID() },
-    });
-    let out = `<b>${r.job_id}</b> ${r.deduped ? "(deduped — same idempotency key)" : ""} · ` +
-      `position ${r.position}` + (r.eta_s != null ? ` · ETA ${fmtEta(r.eta_s)}` : "");
-    if (r.waiting) out += ` · <span style="color:var(--warn)">waiting on ${r.waiting}</span>: ` +
-      r.blockers.map(b => `${b.node} (${b.reason})`).join(", ");
-    out += ` — <a href="/ui/run.html?job=${esc(r.job_id)}">open run</a>`;
+    const r = await api("/api/runs", { method: "POST", body,
+      headers: { "Idempotency-Key": crypto.randomUUID() } });
+    let out = `<b class="mono">${r.job_id}</b>${r.deduped ? " (deduped)" : ""}
+      · position ${r.position}${r.eta_s != null ? ` · ETA ${fmtEta(r.eta_s)}` : ""}
+      · <a href="/ui/run.html?job=${esc(r.job_id)}">open run</a>`;
+    if (r.waiting) out += `<div class="warn-text mt2">waiting on ${r.waiting}: ` +
+      r.blockers.map(b => `${b.node} (${b.reason})`).join(", ") + `</div>`;
     $("#result").innerHTML = out;
   } catch (err) {
-    $("#result").innerHTML = `<span style="color:var(--err)">${esc(err.message)}</span>`;
-  } finally {
-    $("#go").disabled = false;
-  }
+    $("#result").innerHTML = `<span class="err-text">${esc(err.message)}</span>`;
+  } finally { $("#go").disabled = false; }
 });
+
+$("#type").addEventListener("change", loadEndpoints);
+await loadEndpoints();
+await loadTickets();
+poll(loadEndpoints, 10000);
 })();
 </script>
 </body>

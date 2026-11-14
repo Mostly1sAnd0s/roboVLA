@@ -459,3 +459,60 @@ class TestRestore:
         with pytest.raises(RobovlaError) as e:
             s.restore(self._job(job_id="j_20261021_0002", job_type="warp"))
         assert e.value.code == "validation"
+
+
+class TestEndpointBoard:
+    """node_queue + wait_for_new_s (design §7.3): the endpoint picker shows
+    what is on a node and how long a NEW submission would wait there."""
+
+    def test_node_queue_separates_pinned_from_auto(self):
+        s = Scheduler([_node()])
+        s.add(_job(jid="j_pin", target="nodeA", at=10.0))
+        s.add(_job(jid="j_auto", target=None, at=20.0))
+        q = s.node_queue("nodeA")
+        assert [j["job_id"] for j in q["queued"]] == ["j_pin"]
+        assert q["auto_queued"] == 1  # first-fit: not this node's queue
+
+    def test_node_queue_lists_running_with_slot_class(self):
+        s = Scheduler([_node()])
+        s.add(_job(jid="j_t", job_type="train"))
+        s.add(_job(jid="j_i", job_type="infer", budget=1.0, dur=0.0))
+        s.transition("j_t", "start", "nodeA")
+        s.transition("j_i", "start", "nodeA")
+        q = s.node_queue("nodeA")
+        assert {j["class"] for j in q["running"]} == {"train", "infer"}
+        assert (q["train_used"], q["infer_used"]) == (1, 1)
+
+    def test_wait_counts_running_and_queued_ahead(self):
+        s = Scheduler([_node()])
+        s.add(_job(jid="j_run", job_type="train", dur=600.0))
+        s.transition("j_run", "start", "nodeA")
+        s.add(_job(jid="j_ahead", target="nodeA", dur=300.0))
+        assert s.wait_for_new_s("nodeA", "train", node_states=_states(
+            nodeA=(True, 30.0))) == 900.0
+
+    def test_wait_is_class_scoped(self):
+        # an infer slot in use does not make a train submission wait (§3)
+        s = Scheduler([_node()])
+        s.add(_job(jid="j_i", job_type="infer", dur=0.0, budget=1.0))
+        s.transition("j_i", "start", "nodeA")
+        assert s.wait_for_new_s("nodeA", "train",
+                                node_states=_states(nodeA=(True, 30.0))) == 0.0
+
+    def test_wait_none_when_offline_disabled_or_wrong_family(self):
+        smol = replace(_node(nid="smolZ"), model="lerobot/smolvla_base",
+                       gpu=replace(_node().gpu, quant="fp32"))
+        s = Scheduler([_node(), smol])
+        st = _states(nodeA=(True, 30.0), smolZ=(True, 7.0))
+        assert s.wait_for_new_s("nodeA", "train", node_states=_states(
+            nodeA=(False, 0.0))) is None
+        assert s.wait_for_new_s("smolZ", "train", family="openvla",
+                                node_states=st) is None
+        assert s.wait_for_new_s("smolZ", "train", family="smolvla",
+                                node_states=st) == 0.0
+        assert s.wait_for_new_s("ghost", "train", node_states=st) is None
+
+    def test_wait_zero_is_the_honest_answer_for_an_idle_node(self):
+        s = Scheduler([_node()])
+        assert s.wait_for_new_s("nodeA", "train",
+                                node_states=_states(nodeA=(True, 30.0))) == 0.0

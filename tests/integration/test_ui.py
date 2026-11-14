@@ -15,7 +15,7 @@ UI = pathlib.Path(__file__).resolve().parents[2] / "ui"
 
 PAGES = ["login.html", "logout.html", "index.html", "datasets.html",
          "new-run.html", "run.html", "class-board.html", "slots.html",
-         "teacher.html", "accounts.html"]
+         "endpoints.html", "robot.html", "teacher.html", "accounts.html"]
 
 
 @pytest.fixture
@@ -60,6 +60,11 @@ def test_ui_pages_wired_to_the_api(ui_env):
     assert "/api/admin/nodes" in html["teacher.html"]
     assert "/api/admin/audit" in html["teacher.html"]
     assert "/api/admin/users" in html["accounts.html"]
+    # the endpoint board: students see per-node load and pick a queue (§7.3)
+    assert "/api/nodes" in html["endpoints.html"]
+    assert "/api/nodes" in html["new-run.html"]
+    assert "/api/admin/nodes/" in html["endpoints.html"]   # teacher selectable toggle
+    assert "/api/infer/robot-view" in html["robot.html"]
     # nav is hx-boosted (htmx is actually used, not just vendored)
     assert html["index.html"].count('hx-boost="true"') == 1
     # the error shape the pages render (§9.6)

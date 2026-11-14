@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse
 
 from ..core.errors import STATUS_BY_CODE, RobovlaError
 from ..service import ConsoleService
-from . import admin, admin_users, auth, datasets, health, infer, runs, stream, tickets
+from . import (admin, admin_users, auth, datasets, health, infer, nodes, runs,
+               stream, tickets)
 
 log = logging.getLogger("robovla")
 
@@ -56,6 +57,7 @@ def create_app(svc: ConsoleService, *, ui_dir: str | Path | None = None,
         return _error_response("internal", "internal error (see service log)")
 
     app.include_router(health.router)
+    app.include_router(nodes.router)
     app.include_router(auth.router)
     app.include_router(datasets.router)
     app.include_router(runs.router)

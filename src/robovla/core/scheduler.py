@@ -378,6 +378,63 @@ class Scheduler:
             best = pos if best is None else min(best, pos)
         return best if best is not None else 0
 
+    # -- display: one node's queue + the wait a new arrival would face --
+
+    def node_queue(self, node_id: str) -> dict[str, Any]:
+        """What a student sees on one training endpoint (§7.3, §8.2).
+
+        Two queues, because the scheduler has two: jobs **pinned** to this
+        node (they wait here and nowhere else) and jobs submitted **auto**
+        (they first-fit across every enabled node, so they are not one
+        node's property and must not be counted as such). Running jobs are
+        listed with their slot class so a student can tell a train slot
+        from a serving slot.
+        """
+        running = [j for j in self._jobs.values() if j.state in _TERMINAL_OR_RUNNING
+                   and j.node_id == node_id]
+        pinned = sorted((j for j in self._jobs.values()
+                         if j.state == "queued" and j.target_node == node_id),
+                        key=self._queue_key)
+        auto = [j for j in self._jobs.values()
+                if j.state == "queued" and j.target_node is None]
+        return {
+            "running": [{"job_id": j.job_id, "student": j.student,
+                         "job_type": j.job_type, "state": j.state,
+                         "class": slot_class(j.job_type),
+                         "est_duration_s": j.est_duration_s} for j in running],
+            "queued": [{"job_id": j.job_id, "student": j.student,
+                        "job_type": j.job_type, "class": slot_class(j.job_type),
+                        "est_duration_s": j.est_duration_s} for j in pinned],
+            "auto_queued": len(auto),
+            "train_used": len([j for j in running if slot_class(j.job_type) == "train"]),
+            "infer_used": len([j for j in running if slot_class(j.job_type) == "infer"]),
+        }
+
+    def wait_for_new_s(self, node_id: str, job_type: str, *,
+                       family: str = "", node_states: dict[str, NodeState]) -> float | None:
+        """Seconds a job NEWLY submitted to this node would wait before it
+        starts (display only — the same heuristic as :meth:`eta_s`).
+
+        ``None`` means "this node will not take the job at all": disabled,
+        offline, or the wrong model family. A node that is merely busy
+        returns a number, which is what makes the endpoint picker honest:
+        busy is a wait, not a refusal.
+        """
+        node = next((n for n in self._nodes if n.id == node_id), None)
+        if node is None or not node.enabled:
+            return None
+        if (family or "openvla") != model_family(node.model):
+            return None
+        view = node_states.get(node_id)
+        if view is None or not view.online:
+            return None
+        cls = slot_class(job_type)
+        wait = sum(j.est_duration_s for j in self._running_jobs(node_id, cls))
+        wait += sum(j.est_duration_s for j in self._jobs.values()
+                    if j.state == "queued" and self._targets_node(j, node_id)
+                    and self._node_family_ok(j, node))
+        return wait
+
     def eta_s(self, job_id: str, node_states: dict[str, NodeState]) -> float:
         """Estimated seconds until the job finishes: queue wait + own duration.
 

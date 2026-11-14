@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — training endpoints</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main class="container">
+  <div class="page-head">
+    <h1>Training endpoints</h1>
+    <span class="muted small" id="sub">what each GPU is doing right now</span>
+    <div class="actions">
+      <label class="check"><input type="checkbox" id="shapeOn" checked>
+        price my run</label>
+      <select id="jobtype" class="xs" style="max-width:130px">
+        <option value="train">train</option><option value="smoke">smoke</option>
+        <option value="crosscheck">crosscheck</option>
+      </select>
+      <div class="unit" style="max-width:170px">
+        <input id="batch" type="number" min="1" value="1" title="batch">
+        <input id="epochs" type="number" min="1" value="1" title="epochs">
+        <span class="suffix">ep</span>
+      </div>
+    </div>
+  </div>
+
+  <p class="small muted">A node that is <b>busy</b> is not a closed door: it is
+    a queue with a wait. Pick the queue you want to join, then start the run on
+    that endpoint. Nodes you may not pick say why.</p>
+
+  <div class="grid" id="board"></div>
+
+  <div class="card mt3">
+    <div class="card-head"><h2>How the queue decides</h2></div>
+    <ul class="small muted mb0">
+      <li><b>Pinned</b> jobs (endpoint named at submit) wait on that machine only.</li>
+      <li><b>Auto</b> jobs first-fit across every enabled machine that runs the
+        same model family — they are nobody's queue until a slot frees.</li>
+      <li>No preemption: a run-now jump goes to the front of the line after the
+        current job finishes (§3).</li>
+      <li>A train slot and a serving (infer) slot are different pools, so a
+        robot driving on a slot does not block your training run (§3).</li>
+    </ul>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("endpoints.html", user);
+const isTeacher = user.role === "teacher";
+
+function vramBar(n) {
+  const cls = n.used_pct > 90 ? "err" : n.used_pct > 60 ? "warn" : "ok";
+  return `<div class="bar ${cls}" title="${n.free_gb} GB free of ${n.vram_gb} GB">
+      <i style="width:${Math.max(0, Math.min(100, n.used_pct))}%"></i></div>
+    <div class="xs muted">${n.free_gb} GB free of ${n.vram_gb} GB
+      · ${n.quant} · ${esc(shortModel(n.model))}</div>`;
+}
+
+function jobLine(j) {
+  return `<div class="row xs" style="padding:2px 0">
+    <a class="mono" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a>
+    <span class="muted">${esc(j.student)}</span>
+    <span>${esc(j.job_type)}</span>
+    <span class="grow right muted">${fmtEta(j.est_duration_s)}</span></div>`;
+}
+
+function slotPill(used, total, kind) {
+  const free = total - used;
+  return `<span class="badge ${free > 0 ? "ready" : "running"}">${kind} ${used}/${total}</span>`;
+}
+
+async function load() {
+  const params = {};
+  if ($("#shapeOn").checked) {
+    params.job_type = $("#jobtype").value;
+    if (["train", "crosscheck"].includes(params.job_type)) {
+      params.batch = +$("#batch").value || 1;
+      params.epochs = +$("#epochs").value || 1;
+    }
+  }
+  const qs = new URLSearchParams(params).toString();
+  const { nodes: board } = await api(`/api/nodes${qs ? `?${qs}` : ""}`);
+  $("#sub").textContent = `${board.filter(n => n.online && n.enabled).length} online`
+    + (params.batch ? ` · priced at batch ${params.batch}` : "");
+
+  $("#board").innerHTML = board.map(n => {
+    const wait = n.eta_start_s == null ? null
+      : (n.eta_start_s === 0 ? "starts immediately" : `starts in ~${fmtEta(n.eta_start_s)}`);
+    const why = n.selectable ? "" :
+      `<div class="xs warn-text mt2">Not pickable: ${n.reasons.join(" · ")}</div>`;
+    const teacherBit = isTeacher ? `
+      <div class="row xs mt2">
+        <span class="muted mono">${esc(n.agent ?? "")}</span>
+        <label class="check grow"><input type="checkbox" class="selTgl" data-n="${esc(n.id)}"
+          ${n.student_selectable ? "checked" : ""}> students may pick this node</label>
+        <button class="ghost sm" data-probe="${esc(n.id)}">probe</button>
+      </div>` : "";
+    return `<div class="card ${n.selectable ? "" : "card--warn"}">
+      <div class="card-head">
+        <h2>${esc(n.label ?? n.id)}</h2>
+        ${badge(n.enabled ? (n.online ? "online" : "offline") : "disabled")}
+        <div class="actions">${n.selectable
+          ? `<a href="/ui/new-run.html?node=${esc(n.id)}">
+              <button class="sm">Run here</button></a>` : badge("selected")}</div>
+      </div>
+      ${vramBar(n)}
+      <div class="row mt2">
+        ${slotPill(n.train_used, n.train_slots, "train")}
+        ${slotPill(n.infer_used, n.infer_slots, "infer")}
+        <span class="xs muted">batches ${n.batch_presets.join("/")} · prio ${n.priority}</span>
+        <span class="grow right small ${wait === "starts immediately" ? "ok" : "muted"}">${wait ?? "—"}</span>
+      </div>
+      ${why}
+      ${n.est_run_s ? `<div class="xs muted mt2">your run here ≈ ${fmtEta(n.est_run_s)}
+        (job estimate, not a promise)</div>` : ""}
+      <div class="mt2">
+        <div class="xs muted">running now</div>
+        ${n.running.map(jobLine).join("") || '<div class="xs muted">idle</div>'}
+        <div class="xs muted mt2">pinned queue (${n.queued.length})</div>
+        ${n.queued.map(jobLine).join("") || '<div class="xs muted">nobody in line</div>'}
+        <div class="xs muted mt2">+ ${n.auto_queued} auto job(s) first-fitting across the fleet</div>
+      </div>
+      ${teacherBit}
+    </div>`;
+  }).join("") || `<div class="empty">No nodes in the fleet.</div>`;
+
+  if (isTeacher) {
+    $$(".selTgl").forEach(cb => cb.addEventListener("change", async () => {
+      try {
+        await api(`/api/admin/nodes/${cb.dataset.n}`,
+          { method: "PATCH", body: { student_selectable: cb.checked } });
+        toast(`${cb.dataset.n}: students may ${cb.checked ? "" : "not "}pick this node`);
+        load();
+      } catch (e) { toast(e.message, true); cb.checked = !cb.checked; }
+    }));
+    $$("[data-probe]").forEach(b => b.addEventListener("click", async () => {
+      try {
+        const r = await api(`/api/admin/nodes/${b.dataset.probe}/probe`, { method: "POST" });
+        toast(`probe ${b.dataset.probe}: ${r.ok ? "OK" : `not ok — ${r.reason ?? ""}`}`);
+      } catch (e) { toast(e.message, true); }
+    }));
+  }
+}
+load().catch(err => toast(err.message, true));
+poll(load, 8000);
+})();
+</script>
+</body>
+</html>
