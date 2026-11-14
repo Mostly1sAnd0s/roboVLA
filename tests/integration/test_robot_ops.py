@@ -55,13 +55,14 @@ class TestRobotConfig:
 
     def test_a_peer_cannot_edit_another_robot(self, env):
         env.as_student("s07")
-        env.client.post("/api/robot/config",
-                        json={"config": {"rate_hz": 3.0}})
+        env.client.post("/api/robot/config", json={"config": {"rate_hz": 3.0}})
         env.as_student("s01")
-        back = env.client.post("/api/robot/config",
+        # refused out loud: silently editing one's own robot instead would let a
+        # mis-targeted request look like it worked
+        assert env.client.post("/api/robot/config",
                                json={"student": "s07",
-                                     "config": {"rate_hz": 9.0}}).json()
-        assert back["student"] == "s01"                    # never escalated
+                                     "config": {"rate_hz": 9.0}}).status_code == 403
+        assert env.client.get("/api/robot/config?student=s07").status_code == 403
         env.as_student("s07")
         assert env.client.get("/api/robot/config").json()["config"]["rate_hz"] == 3.0
 
@@ -141,8 +142,8 @@ class TestStop:
     def test_a_peer_cannot_stop_or_clear_another_robot(self, env):
         _open_teleop(env, "s07")
         env.as_student("s01")
-        r = env.client.post("/api/robot/stop", json={"student": "s07"})
-        assert r.status_code == 200 and r.json()["stopped"] == ["s01"]  # own robot
+        assert env.client.post("/api/robot/stop",
+                               json={"student": "s07"}).status_code == 403
         assert env.svc.storage.get_kv("robot_ctl:s07") is None
 
     def test_teacher_broadcast_stops_every_robot_that_is_driving(self, env):

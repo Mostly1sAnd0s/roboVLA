@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 
 from .. import jobs_ops
+from ..core.errors import RobovlaError
 from ..core.robot_control import TELEOP_LIMITS, control_for
 from .auth import ROLE_STUDENT, ROLE_TEACHER, require, svc
 
@@ -22,10 +23,15 @@ router = APIRouter(prefix="/api/robot", tags=["robot-ui"])
 
 
 def _target(user: dict[str, Any], body: dict[str, Any]) -> str:
-    """Whose robot: the caller's, or the named one if the caller is a teacher."""
+    """Whose robot: the caller's, or the named one if the caller is a teacher.
+
+    Naming someone else's robot as a student is refused, not quietly rewritten:
+    a drive page that silently moved a different robot would be worse than an
+    error, and the operator needs to see that the request was wrong.
+    """
     who = str(body.get("student") or user["user_id"])
     if user["role"] != ROLE_TEACHER and who != user["user_id"]:
-        return user["user_id"]          # never escalate; ops re-check anyway
+        raise RobovlaError("forbidden", "you may only command your own robot")
     return who
 
 
@@ -35,7 +41,7 @@ async def get_config(request: Request, student: str = "",
     s = svc(request)
     who = student or user["user_id"]
     if user["role"] != ROLE_TEACHER and who != user["user_id"]:
-        who = user["user_id"]
+        raise RobovlaError("forbidden", "you may only read your own robot")
     return {"student": who, "config": jobs_ops.robot_config(s, who),
             "limits": {k: list(v) for k, v in TELEOP_LIMITS.items()}}
 
@@ -58,7 +64,7 @@ async def status(request: Request, student: str = "",
     s = svc(request)
     who = student or user["user_id"]
     if user["role"] != ROLE_TEACHER and who != user["user_id"]:
-        who = user["user_id"]
+        raise RobovlaError("forbidden", "you may only watch your own robot")
     view = s.robot_view.view(who)
     ctl = jobs_ops.robot_ctl(s, who)
     return {"student": who, "view": view, "age_s": s.robot_view.age_s(who),
