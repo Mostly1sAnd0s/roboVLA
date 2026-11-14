@@ -14,6 +14,7 @@ from fastapi.responses import Response
 
 from .. import datasets_ops, jobs_ops
 from ..core.errors import RobovlaError
+from ..core.robot_control import control_for
 from ..service import LEASE_S
 from .auth import (ROLE_STUDENT, ROLE_TEACHER, agent_token_ok, current_user,
                    require, svc, user_from_bearer)
@@ -23,6 +24,10 @@ robot_router = APIRouter(prefix="/api/robot", tags=["robot"])
 
 ROBOT_ENDPOINT = "/api/robot/predict"
 _RATE_PER_S = 5  # ~5 req/s per student (§9.5)
+# A drive session sends telemetry every tick and needs no predict call (the
+# human is the policy), so telemetry gets its own, higher bucket: the frame
+# rate the browser sees is this cap, not a new channel to the robot.
+_TELEMETRY_RATE_PER_S = 12
 
 
 @router.post("/slots/claim")
@@ -92,6 +97,10 @@ async def robot_view(request: Request, user: dict = Depends(current_user)) -> di
                            if row else {})
             v["asked_prompt"] = (row["spec"].get("prompt_override") or "") \
                 if row else ""
+            v["age_s"] = s.robot_view.age_s(stu)
+            ctl = jobs_ops.robot_ctl(s, stu)
+            v["stop"] = ctl.get("stop")                     # who stopped it, why
+            v["control_mode"] = control_for(ctl, s.clock())["mode"]
             views[stu] = v
     return {"views": views}
 
@@ -121,12 +130,14 @@ async def robot_telemetry(request: Request,
         raise RobovlaError("auth", "missing Bearer token")
     token = authorization[7:].strip()
     user = user_from_bearer(s, token)
-    s.check_rate("robot_telemetry", user["user_id"], _RATE_PER_S, 1.0)
+    s.check_rate("robot_telemetry", user["user_id"], _TELEMETRY_RATE_PER_S, 1.0)
     body = await request.json()
     return jobs_ops.robot_telemetry(s, user, body.get("image", ""),
                                     body.get("action_robot"),
                                     body.get("latency_ms"),
-                                    body.get("prompt", ""))
+                                    body.get("prompt", ""),
+                                    state=body.get("state"),
+                                    record_ack=body.get("record_ack"))
 
 
 @robot_router.post("/predict")

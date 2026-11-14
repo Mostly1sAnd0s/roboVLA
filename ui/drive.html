@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>roboVLA — drive</title>
+<link rel="stylesheet" href="/ui/style.css">
+</head>
+<body>
+<nav id="nav" hx-boost="true"></nav>
+<main class="container">
+  <div class="page-head">
+    <h1>Drive</h1>
+    <span class="muted small">keyboard or gamepad → console → the robot's next poll</span>
+    <div class="actions">
+      <select id="who" class="hidden"></select>
+      <span id="mode" class="pill">—</span>
+      <button class="danger" id="estop">E-STOP (space)</button>
+      <button class="secondary hidden" id="allstop">Stop every robot</button>
+    </div>
+  </div>
+
+  <div id="notice" class="card small hidden"></div>
+
+  <div class="grid grid--l mt2">
+    <div class="card">
+      <div class="card-head"><h2>View</h2>
+        <span class="xs muted" id="framenote"></span></div>
+      <img id="frame" class="eye frame" alt="robot camera">
+      <div class="metrics mt2" id="state"></div>
+      <div class="xs muted mt2" id="quiet"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Teleop</h2>
+        <span class="xs muted" id="padnote">no input</span></div>
+      <div class="deadman"><i id="dm"></i></div>
+      <div class="xs muted">hold to drive · release stops · keys stop when this
+        window loses focus</div>
+      <div class="keymap mt2">
+        <div class="km"><kbd>W</kbd><kbd>↑</kbd><span>forward</span></div>
+        <div class="km"><kbd>S</kbd><kbd>↓</kbd><span>reverse</span></div>
+        <div class="km"><kbd>A</kbd><kbd>←</kbd><span>turn left</span></div>
+        <div class="km"><kbd>D</kbd><kbd>→</kbd><span>turn right</span></div>
+        <div class="km"><kbd>space</kbd><span class="warn-text">e-stop (latched)</span></div>
+      </div>
+      <div class="btn-row mt2">
+        <button class="danger" id="clearstop" disabled>clear stop</button>
+        <span class="xs muted" id="stopby"></span>
+      </div>
+
+      <div class="card-head mt3"><h2>Record a demo</h2></div>
+      <div class="field"><label for="task">Task name</label>
+        <input id="task" placeholder="stop-at-target" maxlength="120"></div>
+      <div class="btn-row">
+        <button id="recstart">start episode</button>
+        <button class="secondary" id="recstop">stop</button>
+        <span class="xs muted" id="recnote"></span>
+      </div>
+      <p class="xs muted">The robot acts on the command at its next poll and
+        acknowledges it; the recorder writes locally and uploads later.</p>
+
+      <details class="mt3"><summary>prompt and robot config</summary>
+        <div class="field mt2"><label for="prompt">Live prompt
+          <span class="muted">— needs an inference slot</span></label>
+          <div class="row"><input id="prompt" maxlength="200" class="grow">
+            <button class="secondary" id="setprompt">set</button></div></div>
+        <div id="cfgbox"></div>
+      </details>
+    </div>
+  </div>
+</main>
+<script src="/ui/vendor/htmx.min.js"></script>
+<script src="/ui/app.js"></script>
+<script>
+(async () => {
+const user = await me();
+if (!user) location.href = "/ui/login.html";
+nav("drive.html", user);
+const isTeacher = user.role === "teacher";
+if (isTeacher) $("#allstop").classList.remove("hidden");
+let student = user.user_id, cfg = null, ctl = null, acked = 0, lastSeq = 0;
+
+// ---------------------------------------------------------------- input model
+// One input source at a time: keyboard wins while a key is held, otherwise a
+// gamepad axis. Motion is clamped by the console too — a stuck key must never
+// become a full-speed robot.
+const KEYS = new Set();
+const SPEED = {vx: 0.15, wz: 0.6};
+let pad = null;
+
+function fromKeys() {
+  let vx = 0, wz = 0;
+  if (KEYS.has("w") || KEYS.has("arrowup")) vx += SPEED.vx;
+  if (KEYS.has("s") || KEYS.has("arrowdown")) vx -= SPEED.vx;
+  if (KEYS.has("a") || KEYS.has("arrowleft")) wz += SPEED.wz;
+  if (KEYS.has("d") || KEYS.has("arrowright")) wz -= SPEED.wz;
+  return (vx || wz) ? {vx, wz, src: "keyboard"} : null;
+}
+
+function fromPad() {
+  if (!pad) return null;
+  const dz = (v) => Math.abs(v) < 0.15 ? 0 : v;          // stick deadzone
+  const y = dz(pad.axes[1] ?? 0), x = dz(pad.axes[0] ?? 0);
+  return (y || x) ? {vx: -y * SPEED.vx / 0.3 * 0.3, wz: -x * SPEED.wz / 0.3 * 0.3,
+                     src: "gamepad"} : null;
+}
+
+addEventListener("gamepadconnected", (e) => { pad = e.gamepad; $("#padnote").textContent = e.gamepad.id.slice(0, 28); });
+addEventListener("gamepaddisconnected", () => { pad = null; $("#padnote").textContent = "no input"; });
+
+addEventListener("keydown", (e) => {
+  if (e.target.matches("input,textarea,select")) return;
+  const k = e.key.toLowerCase();
+  if (k === " ") { e.preventDefault(); estop(); return; }
+  if (["w", "a", "s", "d", "arrowup", "arrowdown", "arrowleft", "arrowright"].includes(k)) {
+    e.preventDefault();
+    KEYS.add(k);
+  }
+});
+addEventListener("keyup", (e) => KEYS.delete(e.key.toLowerCase()));
+// a tab that goes away is a tab that is not watching the robot
+addEventListener("blur", () => { KEYS.clear(); send(0, 0, "blur"); });
+document.addEventListener("visibilitychange", () => { if (document.hidden) { KEYS.clear(); send(0, 0, "hidden"); } });
+
+let lastSent = 0;
+async function send(vx, wz, why) {
+  try {
+    const r = await api("/api/robot/teleop", {method: "POST",
+      body: {student, vx, wz, hold_s: 0.4}});
+    lastSent = performance.now();
+    $("#padnote").textContent = `${why} ${vx.toFixed(2)}/${wz.toFixed(2)} · hold ${r.hold_s}s`;
+  } catch (err) {
+    KEYS.clear();
+    $("#padnote").textContent = err.message;
+  }
+}
+
+// ------------------------------------------------------------------ stop path
+async function estop() {
+  KEYS.clear();
+  try {
+    await api("/api/robot/stop", {method: "POST", body: {student, reason: "browser e-stop"}});
+    toast("stop latched — the robot zeroes on its next poll");
+    refresh();
+  } catch (err) { toast(err.message, true); }
+}
+$("#estop").addEventListener("click", estop);
+$("#allstop").addEventListener("click", async () => {
+  if (!await confirmAction({title: "Stop every robot?", danger: true,
+      body: "Every robot that is driving or holds a slot latches a stop. Clear it per robot.",
+      okLabel: "Stop all"})) return;
+  const r = await api("/api/robot/stop", {method: "POST", body: {broadcast: true, reason: "teacher broadcast"}});
+  toast(`stopped: ${r.stopped.length ? r.stopped.join(", ") : "none were driving"}`);
+});
+$("#clearstop").addEventListener("click", async () => {
+  if (!await confirmAction({title: "Clear the stop?",
+      body: "Motion becomes possible again — the robot resumes with whatever source is active.",
+      okLabel: "Clear"})) return;
+  try { await api("/api/robot/stop", {method: "POST", body: {student, clear: true}}); toast("stop cleared"); refresh(); }
+  catch (err) { toast(err.message, true); }
+});
+
+// ---------------------------------------------------------------- record path
+async function record(action) {
+  try {
+    const r = await api("/api/robot/record", {method: "POST",
+      body: {student, action, task: $("#task").value.trim()}});
+    toast(`${action} queued (command ${r.seq})`);
+  } catch (err) { toast(err.message, true); }
+}
+$("#recstart").addEventListener("click", () => record("start"));
+$("#recstop").addEventListener("click", () => record("stop"));
+
+// ---------------------------------------------------------------- config path
+const CFG_FIELDS = [["ros_domain_id", "ROS_DOMAIN_ID", 0, 232, 1],
+                    ["rate_hz", "model loop Hz", 0.2, 10, 0.1],
+                    ["telemetry_rate_hz", "telemetry Hz", 0.5, 10, 0.5],
+                    ["frame_size", "frame px", 112, 640, 16]];
+function renderCfg() {
+  const editable = isTeacher || student === user.user_id;
+  $("#cfgbox").innerHTML = `
+    <div class="grid grid--2">
+      ${CFG_FIELDS.map(([k, label, lo, hi, step]) =>
+        `<div class="field"><label for="c-${k}">${label}</label>
+          <input id="c-${k}" type="number" min="${lo}" max="${hi}" step="${step}"
+                 value="${cfg[k]}" ${editable ? "" : "disabled"}></div>`).join("")}
+    </div>
+    <label class="check"><input type="checkbox" id="c-teleop"
+      ${cfg.teleop.enabled ? "checked" : ""} ${isTeacher ? "" : "disabled"}>
+      teleop enabled for this robot <span class="muted">(teacher switch)</span></label>
+    <div class="field mt2"><label for="c-deadman">deadman (s)</label>
+      <input id="c-deadman" type="number" min="0.2" max="5" step="0.1"
+             value="${cfg.teleop.deadman_s}" ${isTeacher ? "" : "disabled"}></div>
+    <div class="btn-row mt2"><button class="secondary" id="savecfg"
+      ${editable ? "" : "disabled"}>save config</button>
+      <span class="xs muted">the robot picks this up at its next bringup</span></div>`;
+  $("#savecfg").addEventListener("click", async () => {
+    const next = {...cfg};
+    for (const [k] of CFG_FIELDS) next[k] = Number($(`#c-${k}`).value);
+    next.teleop = {...cfg.teleop, enabled: $("#c-teleop").checked,
+                   deadman_s: Number($("#c-deadman").value)};
+    try {
+      cfg = (await api("/api/robot/config", {method: "POST", body: {student, config: next}})).config;
+      renderCfg();
+      toast("config saved — applies at the robot's next bringup");
+    } catch (err) { toast(err.message, true); }
+  });
+}
+
+// -------------------------------------------------------------------- polling
+const MODE = {model: ["model", ""], teleop: ["teleop", "ok"], stop: ["STOPPED", "err-text"]};
+async function refresh() {
+  let s;
+  try { s = await api(`/api/robot/status?student=${encodeURIComponent(student)}`); }
+  catch (err) { $("#notice").hidden = false; $("#notice").textContent = err.message; return; }
+  $("#notice").hidden = true;
+  ctl = s.control; cfg = s.config; acked = s.record_acked;
+  const [label, cls] = MODE[ctl.mode] ?? [ctl.mode, ""];
+  $("#mode").innerHTML = `<span class="${cls}">${label}</span>`;
+  $("#stopby").textContent = ctl.stop ? `stopped by ${ctl.stop.by}: ${ctl.stop.reason || "no reason given"}`
+    : (ctl.mode === "teleop" ? `command expires in ${ctl.expires_in_s}s` : "");
+  $("#clearstop").disabled = !ctl.stop;
+
+  const v = s.view;
+  if (v) {
+    $("#frame").src = `data:image/jpeg;base64,${v.frame_b64}`;
+    lastSeq = v.seq;
+    const sp = Math.hypot(v.action?.[0] ?? 0, v.action?.[1] ?? 0);
+    const st = v.state ?? {};
+    $("#state").innerHTML = [["speed", `${sp.toFixed(2)} m/s`],
+      ["turn", `${(v.action?.[2] ?? 0).toFixed(2)} rad/s`],
+      ["battery", st.battery != null ? `${Math.round(st.battery * 100)}%` : "—"],
+      ["latency", `${Number(v.latency_ms).toFixed(0)} ms`],
+      ["prompt", v.prompt || "—"]].map(([k, val]) =>
+      `<div class="metric"><div class="k">${k}</div><div class="v small">${esc(String(val))}</div></div>`).join("");
+    $("#framenote").textContent = `frame ${v.seq}` + (v.slot_job ? ` · slot ${v.slot_job}` : " · no slot (human driving)");
+    if (!document.activeElement.matches("#prompt")) $("#prompt").placeholder = v.prompt || "live prompt";
+  }
+  $("#quiet").textContent = s.age_s == null ? "no telemetry yet — start the robot"
+    : s.age_s > 3 ? `robot quiet for ${s.age_s}s` : "";
+  $("#recnote").textContent = ctl.record
+    ? `command ${ctl.record.seq} (${ctl.record.action}) waiting for the robot`
+    : acked ? `last command ${acked} acknowledged` : "";
+  if (!document.activeElement.matches("#cfgbox input")) renderCfg();
+}
+
+if (isTeacher) {
+  try {
+    const {users} = await api("/api/admin/users");
+    const studs = users.filter(u => u.role === "student");
+    $("#who").classList.remove("hidden");
+    $("#who").innerHTML = studs.map(u => `<option value="${esc(u.user_id)}">${esc(u.display_name || u.user_id)}</option>`).join("");
+    student = studs[0]?.user_id ?? user.user_id;
+    $("#who").addEventListener("change", () => { student = $("#who").value; refresh(); });
+  } catch { /* teacher list is not reachable; drive nothing but my own */ }
+}
+
+await refresh();
+poll(refresh, 500);
+
+// the teleop loop: 10 Hz while something is held, one zero when nothing is
+setInterval(() => {
+  const want = fromKeys() || fromPad();
+  if (ctl && ctl.mode === "stop") { if (KEYS.size) KEYS.clear(); }
+  else if (want && performance.now() - lastSent >= 100) send(want.vx, want.wz, want.src);
+  // deadman: the window a held command still owns, counted from the last send
+  const left = lastSent ? Math.max(0, 0.4 - (performance.now() - lastSent) / 1000) : 0;
+  $("#dm").style.width = `${(left / 0.4 * 100).toFixed(0)}%`;
+}, 100);
+
+// gamepad polling needs a rAF loop, not events
+(function pollPad() {
+  if (pad && navigator.getGamepads) {
+    const live = navigator.getGamepads()[pad.index];
+    if (live) {
+      pad = live;
+      if (live.buttons[0]?.pressed) estop();          // A button = e-stop
+    }
+  }
+  requestAnimationFrame(pollPad);
+})();
+})();
+</script>
+</body>
+</html>

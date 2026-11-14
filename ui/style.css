@@ -222,6 +222,18 @@ details[open] > summary { margin-bottom: var(--s2); }
 .bar.err > i { background: var(--err); }
 .bar.ok > i { background: var(--ok); }
 
+/* Drive page: the deadman bar shrinks as the held command runs out, so a
+   student can see the window in which the robot will still obey. */
+.deadman { height: 6px; background: var(--line); border-radius: 3px; overflow: hidden;
+           margin: var(--s2) 0; }
+.deadman > i { display: block; height: 100%; background: var(--ok); width: 0%;
+               transition: width .1s linear; }
+.keymap { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+          gap: var(--s2); }
+.km { display: flex; align-items: center; gap: var(--s2); font-size: var(--t-xs);
+      color: var(--dim); }
+.km kbd { min-width: 2.2em; text-align: center; }
+
 canvas.chart {
   display: block; width: 100%; height: var(--h, 110px);
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);

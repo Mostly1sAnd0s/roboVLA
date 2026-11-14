@@ -25,7 +25,8 @@ class RobotViewStore:
         self._seq = 0
 
     def put(self, student: str, frame_jpeg: bytes, action: list[float],
-            latency_ms: float, prompt: str, slot_job: str) -> int:
+            latency_ms: float, prompt: str, slot_job: str,
+            state: dict[str, Any] | None = None) -> int:
         if len(frame_jpeg) > MAX_FRAME_BYTES:
             raise ValueError(f"telemetry frame too large ({len(frame_jpeg)} B)")
         with self._lock:
@@ -34,7 +35,8 @@ class RobotViewStore:
             ring = self._rings.setdefault(student, deque(maxlen=self._maxlen))
             ring.append({"seq": seq, "ts": time.time(), "jpeg": frame_jpeg,
                          "action": list(action), "latency_ms": latency_ms,
-                         "prompt": prompt, "slot_job": slot_job})
+                         "prompt": prompt, "slot_job": slot_job,
+                         "state": dict(state or {})})
             return seq
 
     def view(self, student: str) -> dict[str, Any] | None:
@@ -49,6 +51,12 @@ class RobotViewStore:
         newest["frame_b64"] = base64.b64encode(newest.pop("jpeg")).decode()
         newest["history"] = hist
         return newest
+
+    def age_s(self, student: str) -> float | None:
+        """Seconds since the last sample; the UI's 'robot went quiet' signal."""
+        with self._lock:
+            ring = self._rings.get(student)
+            return None if not ring else round(time.time() - ring[-1]["ts"], 1)
 
     def students(self) -> list[str]:
         with self._lock:

@@ -4,9 +4,21 @@ Goal: a student runs the whole loop in the console — drive, record, upload,
 train, serve, test — without a terminal. The only terminal step left is
 `ssh pi3` then `rosbot` (the one bringup command), as the recipe states.
 
-Status: console pages, endpoint board, dataset upload, training, serving and
-the robot view work from the browser. Teleop, remote record start/stop and the
-UI e-stop do not exist yet. This file is the build plan for those.
+## Status
+
+Built (2026-11-14): `core/robot_control.py` (the ladder and the config, pure
+and unit-tested), `http/robot.py` (`/api/robot/config`, `/status`, `/teleop`,
+`/stop`, `/record`), the control block on the telemetry reply, `/ui/drive.html`
+(keyboard + gamepad, deadman bar, latched e-stop, teacher broadcast, record
+start/stop, config editor), and on the robot side `rosbot_vla/control.py` plus
+the teleop/stop/record handling inside `vla_drive_node` and `record_episode_node
+(session:=true)`.
+
+Not built: the Pi bringup script does not fetch `ros_domain_id` from the
+console yet (see "Bringup"), and nothing here has been driven on hardware.
+Tests: roboVLA `tests/unit/test_robot_control.py`,
+`tests/integration/test_robot_ops.py`; rosBot `test/test_control.py`,
+`test/test_modules.py`.
 
 ## Invariants that constrain every design choice
 
@@ -28,12 +40,22 @@ Confirm each against the node before implementing.
 
 ## Robot-side work (rosBot package)
 
-- `robot_up.sh` reads a one-line console URL and the Pi token from
-  `~/rosbot_ws/config.env` (written once by the teacher). Everything else comes
-  from the console: `GET /api/robot/config` → `{ros_domain_id, rate_hz, prompt,
-  teleop: {enabled, deadman_s}, record: {...}}`. That is how the UI sets the
-  endpoint and domain ID: it edits stored per-student config, the robot picks it
-  up at next bringup.
+### Bringup (open)
+
+`ROS_DOMAIN_ID` is set in the environment before ROS starts, so the console
+cannot change it for a running node. The Pi script has to ask first:
+
+```sh
+# ~/rosbot_ws/tools/robot_up.sh, before any ros2 run
+DOM=$(.venv/bin/python -c 'from rosbot_vla.client import ConsoleClient as C;
+     print(C(open("'$CONSOLE_URL'"), open("'$TOKEN_FILE'").read().strip()).config()
+         .get("ros_domain_id", 99))')
+export ROS_DOMAIN_ID=${DOM:-99}
+```
+
+The node reads the same endpoint for its own rates and deadman. Until that line
+lands, the UI's domain-ID field changes the stored config only, and `robot_up.sh`
+keeps using its own `ROS_DOMAIN_ID=99`. **Do not claim otherwise in the UI.**
 - `vla_drive_node` gains three subscriptions it acts on locally:
   `cmd_vel_teleop` ( Twist from the console channel, watchdog `deadman_s`),
   `record/start`, `record/stop`, and `estop` (latched, zero velocity, wins over

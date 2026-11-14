@@ -274,14 +274,14 @@ until it exists, stopping is physical — say so in the UI.
 
 | terminal step | API today | UI today | gap |
 |---|---|---|---|
-| record | none (robot-local node) | — | remote start/stop via telemetry channel? open question |
+| record | `POST /api/robot/record` (+ `record_cmd` topic) | `drive.html` start/stop | hardware check; `record_episode_node session:=true` |
 | upload | `POST /api/datasets/{id}/upload` | CLI only | file picker |
 | ticket + train | `/api/tickets`, `/api/runs` | `new-run.html` | none |
 | continue LoRA | `resume_from` (openvla crash-resume only) | — | wrapper support + honest UX, see §6 |
 | serve | `/api/infer/slots/*` | claim + release buttons | none |
 | watch robot | `/api/robot/telemetry` + `/api/infer/robot-view` | Robot view page | — |
 | prompt / gain | `slots/{id}/prompt`, `/camera` | page controls | none |
-| drive | robot-side `vla_drive` | — | e-stop button (needs node-side subscribe), teleop-over-console are OPEN, design-first features |
+| drive | `POST /api/robot/teleop`, `/stop`, `/status` | `drive.html` (keys, gamepad, deadman, latched stop, teacher broadcast) | hardware check; see `robot-console-plan.md` |
 | triage | `/api/health`, run logs | nodes + run pages | none |
 
 Rules for the weave: every robot→console call stays a robot-initiated

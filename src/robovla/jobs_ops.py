@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
+from datetime import timedelta
 from typing import Any
 
 from .core.errors import RobovlaError
@@ -15,7 +17,23 @@ from .core.scheduler import Job
 from .core.spec import (MODEL_CATALOG, QUANT_FAMILIES, build_job_spec,
                         model_family, validate_job_spec)
 from .core.norm_stats import denormalize
-from .service import LEASE_S, ConsoleService, _dt, norm_stats_obj
+from .core.robot_control import (TELEOP_LIMITS, clamp_cmd, control_for,
+                                 merge_config)
+from .service import (LEASE_S, ConsoleService, _dt, norm_stats_obj,
+                      utcnow_rfc3339)
+
+
+def _after(now: str, seconds: float) -> str:
+    """``now`` + seconds, RFC 3339 with milliseconds (sub-second holds)."""
+    return (_dt(now) + timedelta(seconds=seconds)).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+def _num_range(value: Any, lo: float, hi: float, fallback: float) -> float:
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return min(hi, max(lo, v))
 
 _OVERRIDABLE = ("rank", "alpha", "lr", "epochs", "image_aug", "seed")
 _SUBMIT_TYPES = ("smoke", "train", "validate", "merge", "crosscheck")
@@ -346,26 +364,61 @@ def active_infer_slot(svc: ConsoleService, user: dict[str, Any]) -> dict[str, An
 
 
 def robot_telemetry(svc: ConsoleService, user: dict[str, Any], image_b64: str,
-                    action_robot: Any, latency_ms: Any, prompt: str) -> dict:
-    """§9.10: the drive loop's piggyback (last frame + last action). The
-    response carries the slot's LIVE PROMPT override (one round trip both
-    ways); empty means "keep driving with your own parameter"."""
-    job = active_infer_slot(svc, user)
+                    action_robot: Any, latency_ms: Any, prompt: str,
+                    state: Any = None, record_ack: Any = None) -> dict:
+    """§9.10: the drive loop's piggyback (last frame + last action + state).
+
+    One round trip both ways. The reply carries:
+
+    * ``prompt`` / ``camera`` — the live overrides (empty means keep your own);
+    * ``control`` — the stop/teleop/model ladder result (:mod:`core.robot_control`);
+    * ``config`` — rate and deadman, so the robot can be retuned from the UI;
+    * ``record`` — a recording command until the node acknowledges its seq.
+
+    A slot is required for model driving; a teleop-enabled student with no slot
+    still gets this path (:func:`robot_session`).
+    """
+    student = user["user_id"]
+    job = robot_session(svc, user)
     try:
         jpeg = base64.b64decode(image_b64 or "", validate=False)
     except Exception as e:  # noqa: BLE001
         raise RobovlaError("validation", f"image is not valid base64: {e}")
     try:
-        seq = svc.robot_view.put(user["user_id"], jpeg,
+        seq = svc.robot_view.put(student, jpeg,
                                  [float(x) for x in (action_robot or [])][:7],
                                  float(latency_ms or 0.0), str(prompt or ""),
-                                 job["job_id"])
+                                 job["job_id"] if job else "",
+                                 state if isinstance(state, dict) else None)
     except ValueError as e:
         raise RobovlaError("validation", str(e))
-    svc.storage.set_job(job["job_id"], last_used_at=svc.clock())
-    return {"ok": True, "seq": seq,
-            "prompt": job["spec"].get("prompt_override") or "",
-            "camera": job["spec"].get("camera_override") or {}}
+    if job:
+        svc.storage.set_job(job["job_id"], last_used_at=svc.clock())
+
+    ctl = robot_ctl(svc, student)
+    cfg = robot_config(svc, student)
+    # a recording command is retired once the node has acted on it, so the
+    # robot never sees the same start/stop twice from two replies
+    try:
+        acked = int(record_ack) if record_ack is not None else None
+    except (TypeError, ValueError):
+        acked = None
+    if acked is not None and (ctl.get("record") or {}).get("seq", 0) <= acked:
+        ctl["record_acked"] = acked
+        ctl.pop("record", None)
+        _put_ctl(svc, student, ctl)
+
+    out = {"ok": True, "seq": seq,
+           "prompt": (job["spec"].get("prompt_override") if job else "") or cfg["prompt"],
+           "camera": (job["spec"].get("camera_override") if job else None) or {},
+           "control": control_for(ctl, svc.clock()),
+           "config": {"rate_hz": cfg["rate_hz"],
+                      "telemetry_rate_hz": cfg["telemetry_rate_hz"],
+                      "frame_size": cfg["frame_size"],
+                      "ros_domain_id": cfg["ros_domain_id"],
+                      "deadman_s": cfg["teleop"]["deadman_s"],
+                      "teleop_enabled": cfg["teleop"]["enabled"]}}
+    return out
 
 
 def set_slot_camera(svc: ConsoleService, user: dict[str, Any], job_id: str,
@@ -414,6 +467,166 @@ def set_slot_prompt(svc: ConsoleService, user: dict[str, Any], job_id: str,
     svc.storage.set_job_spec(job_id, spec)
     svc.audit(user["user_id"], "slot.prompt", job_id, None, {"prompt": prompt})
     return {"job_id": job_id, "prompt": prompt}
+
+
+# -- robot config + the control ladder (§9.10 extension) -----------------------
+#
+# Both live in kv, keyed by student, because a drive session may hold an infer
+# slot (model driving) or no slot at all (human driving). One place to read is
+# the telemetry reply, so there is one truth about what the robot may do.
+
+CONFIG_KEY = "robot_config:{}"
+CTL_KEY = "robot_ctl:{}"
+
+
+def robot_config(svc: ConsoleService, student: str) -> dict[str, Any]:
+    """What this student's robot should run with (stored values over defaults)."""
+    raw = svc.storage.get_kv(CONFIG_KEY.format(student))
+    try:
+        stored = json.loads(raw) if raw else None
+    except json.JSONDecodeError:
+        stored = None                      # a corrupt row falls back to defaults
+    return merge_config(stored)
+
+
+def set_robot_config(svc: ConsoleService, user: dict[str, Any], student: str,
+                     patch: dict[str, Any]) -> dict[str, Any]:
+    """Owner or teacher edits a robot config; values are clamped, not trusted.
+
+    The whole block is replaced (not merged field by field) so the UI and the
+    store cannot drift into half-written configs.
+    """
+    if user["role"] != "teacher" and user["user_id"] != student:
+        raise RobovlaError("forbidden", "not your robot")
+    if not isinstance(patch, dict):
+        raise RobovlaError("validation", "robot config must be an object")
+    before = robot_config(svc, student)
+    cfg = merge_config({**before, **patch})
+    svc.storage.set_kv(CONFIG_KEY.format(student), json.dumps(cfg))
+    svc.audit(user["user_id"], "robot.config", student, before, cfg)
+    return cfg
+
+
+def robot_ctl(svc: ConsoleService, student: str) -> dict[str, Any]:
+    raw = svc.storage.get_kv(CTL_KEY.format(student))
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _put_ctl(svc: ConsoleService, student: str, ctl: dict[str, Any]) -> None:
+    svc.storage.set_kv(CTL_KEY.format(student), json.dumps(ctl))
+
+
+def robot_session(svc: ConsoleService, user: dict[str, Any]) -> dict[str, Any] | None:
+    """The robot path's gate: an infer slot, or no slot when the teacher has
+    opened teleop for this student.
+
+    predict() keeps requiring a slot — a human driving needs no GPU. Telemetry
+    accepts either, so the class can watch a motors-off or human-driven
+    session. The relaxation is deliberate, teacher-gated per student, and it
+    changes nothing about motion: dry-run default, deadman and the stop ladder
+    are all node-side.
+    """
+    try:
+        return active_infer_slot(svc, user)
+    except RobovlaError:
+        if robot_config(svc, user["user_id"])["teleop"]["enabled"]:
+            return None
+        raise
+
+
+def _require_robot(svc: ConsoleService, user: dict[str, Any], student: str,
+                   what: str) -> None:
+    """Who may command which robot: the owner, or any teacher."""
+    if user["role"] != "teacher" and user["user_id"] != student:
+        raise RobovlaError("forbidden", f"not your robot, cannot {what}")
+
+
+def queue_teleop(svc: ConsoleService, user: dict[str, Any], student: str,
+                 vx: Any, vy: Any, wz: Any, hold_s: Any = None) -> dict[str, Any]:
+    """One human command, alive for ``hold_s`` (default: the robot's deadman).
+
+    The browser refreshes it while a key or stick is held. When it expires the
+    console reports mode ``model``, and the node's own watchdog zeroes velocity
+    — a lost or stale command can never keep a robot moving.
+    """
+    _require_robot(svc, user, student, "drive it")
+    cfg = robot_config(svc, student)
+    if not cfg["teleop"]["enabled"]:
+        raise RobovlaError("forbidden",
+                           "teleop is not enabled for this robot (teacher setting)")
+    hold = _num_range(hold_s, 0.1, 2.0, cfg["teleop"]["deadman_s"])
+    cmd = clamp_cmd(vx, vy, wz)
+    ctl = robot_ctl(svc, student)
+    ctl["teleop"] = {"vx": cmd[0], "vy": cmd[1], "wz": cmd[2],
+                     "by": user["user_id"],
+                     "expires_at": _after(svc.clock(), hold)}
+    _put_ctl(svc, student, ctl)
+    return {"ok": True, "mode": "teleop", "cmd_vel": cmd, "hold_s": hold,
+            "limits": {k: list(v) for k, v in TELEOP_LIMITS.items()}}
+
+
+def queue_stop(svc: ConsoleService, user: dict[str, Any], student: str,
+               clear: bool = False, broadcast: bool = False,
+               reason: str = "") -> dict[str, Any]:
+    """Latch (or clear) the stop. A teacher broadcast stops every robot.
+
+    Stop outranks teleop and the model, and it stays latched until cleared —
+    the reply repeats it every tick so a robot that missed the first one still
+    stops. Clearing needs the owner or a teacher: a student cannot un-stop
+    someone else's robot, and a stop that auto-cleared would not be a stop.
+    """
+    targets = []
+    if broadcast:
+        if user["role"] != "teacher":
+            raise RobovlaError("forbidden", "only a teacher can stop every robot")
+        driving = set(svc.robot_view.students())
+        with_slot = {j["spec"]["student"] for j in svc.storage.list_jobs(state_in=("running",))
+                     if j["spec"]["type"] == "infer"}
+        targets = sorted(driving | with_slot)
+        if not targets:
+            return {"ok": True, "stopped": [], "note": "no robot is driving"}
+    else:
+        _require_robot(svc, user, student, "stop it")
+        targets = [student]
+    who = user["user_id"] if not broadcast else f"{user['user_id']} (broadcast)"
+    for s in targets:
+        ctl = robot_ctl(svc, s)
+        if clear:
+            ctl.pop("stop", None)
+        else:
+            ctl["stop"] = {"by": who, "at": svc.clock(), "reason": str(reason or "")[:200]}
+        _put_ctl(svc, s, ctl)
+    svc.audit(user["user_id"], "robot.stop_clear" if clear else "robot.stop",
+              ",".join(targets), None, {"broadcast": broadcast})
+    return {"ok": True, "stopped": targets, "cleared": clear}
+
+
+def queue_record(svc: ConsoleService, user: dict[str, Any], student: str,
+                 action: str, task: str = "", note: str = "") -> dict[str, Any]:
+    """Start or stop a recording session on the robot, from the browser.
+
+    Commands carry a sequence number: the reply repeats the same command until
+    the robot acknowledges it, so the node can ignore duplicates and a lost
+    reply cannot lose a recording command.
+    """
+    _require_robot(svc, user, student, "record from it")
+    if action not in ("start", "stop"):
+        raise RobovlaError("validation", 'action must be "start" or "stop"')
+    if not robot_config(svc, student)["record"]["enabled"]:
+        raise RobovlaError("forbidden", "recording is disabled for this robot")
+    ctl = robot_ctl(svc, student)
+    seq = int((ctl.get("record") or {}).get("seq", 0)) + 1
+    ctl["record"] = {"seq": seq, "action": action,
+                     "task": str(task or "")[:120], "note": str(note or "")[:200],
+                     "by": user["user_id"], "at": svc.clock()}
+    ctl["record_acked"] = (ctl.get("record_acked") or 0)
+    _put_ctl(svc, student, ctl)
+    svc.audit(user["user_id"], f"robot.record_{action}", student, None,
+              {"seq": seq, "task": task})
+    return {"ok": True, "seq": seq, "action": action}
 
 
 def robot_predict(svc: ConsoleService, user: dict[str, Any], image_b64: str,

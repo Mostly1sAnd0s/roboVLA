@@ -15,7 +15,8 @@ UI = pathlib.Path(__file__).resolve().parents[2] / "ui"
 
 PAGES = ["login.html", "logout.html", "index.html", "datasets.html",
          "new-run.html", "run.html", "class-board.html", "slots.html",
-         "endpoints.html", "robot.html", "teacher.html", "accounts.html"]
+         "endpoints.html", "robot.html", "drive.html", "teacher.html",
+         "accounts.html"]
 
 
 @pytest.fixture
@@ -65,6 +66,11 @@ def test_ui_pages_wired_to_the_api(ui_env):
     assert "/api/nodes" in html["new-run.html"]
     assert "/api/admin/nodes/" in html["endpoints.html"]   # teacher selectable toggle
     assert "/api/infer/robot-view" in html["robot.html"]
+    # drive page: teleop, latch/clear, record and config all ride the console
+    drive = html["drive.html"]
+    for route in ("/api/robot/teleop", "/api/robot/stop", "/api/robot/record",
+                  "/api/robot/config", "/api/robot/status"):
+        assert route in drive, route
     # nav is hx-boosted (htmx is actually used, not just vendored)
     assert html["index.html"].count('hx-boost="true"') == 1
     # the error shape the pages render (§9.6)

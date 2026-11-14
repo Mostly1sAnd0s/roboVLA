@@ -17,7 +17,8 @@ from fastapi.responses import JSONResponse
 
 from ..core.errors import STATUS_BY_CODE, RobovlaError
 from ..service import ConsoleService
-from . import (admin, admin_users, auth, datasets, health, infer, nodes, runs,
+from . import (admin, admin_users, auth, datasets, health, infer, nodes, robot,
+               runs,
                stream, tickets)
 
 log = logging.getLogger("robovla")
@@ -65,6 +66,7 @@ def create_app(svc: ConsoleService, *, ui_dir: str | Path | None = None,
     app.include_router(stream.router)
     app.include_router(infer.router)
     app.include_router(infer.robot_router)
+    app.include_router(robot.router)        # browser-side robot operation
     app.include_router(infer.agent_router)
     app.include_router(admin.router)
     app.include_router(admin_users.router)

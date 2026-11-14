@@ -277,7 +277,8 @@ const PAGES = [
   { group: [["index.html", "Dashboard"], ["class-board.html", "Class board"]] },
   { group: [["datasets.html", "Datasets"], ["new-run.html", "New run"],
             ["endpoints.html", "Endpoints"]] },
-  { group: [["slots.html", "Serving"], ["robot.html", "Robot"]] },
+  { group: [["slots.html", "Serving"], ["robot.html", "Robot"],
+            ["drive.html", "Drive"]] },
 ];
 const TEACHER_PAGES = [["teacher.html", "Teacher"], ["accounts.html", "Accounts"]];
 
