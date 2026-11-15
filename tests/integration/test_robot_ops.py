@@ -74,6 +74,28 @@ class TestRobotConfig:
         assert reply["config"]["deadman_s"] == cfg["teleop"]["deadman_s"]
 
 
+class TestSeatDomain:
+    def test_a_seat_gets_its_own_domain_without_anyone_editing_a_script(self, env):
+        env.as_student("s07")
+        assert env.client.get("/api/robot/config").json()["config"]["ros_domain_id"] == 105
+        env.as_student("s01")
+        assert env.client.get("/api/robot/config").json()["config"]["ros_domain_id"] == 99
+
+    def test_the_domain_reaches_the_robot_on_its_next_poll(self, env):
+        _open_teleop(env, "s07")
+        reply = _tele(env, _token(env, "s07")).json()
+        assert reply["config"]["ros_domain_id"] == 105
+
+    def test_a_pinned_domain_survives_and_is_not_overwritten_by_the_seat_rule(self, env):
+        env.as_student("s07")
+        env.client.post("/api/robot/config",
+                        json={"config": {"ros_domain_id": 42}})
+        assert env.client.get("/api/robot/config").json()["config"]["ros_domain_id"] == 42
+        # a later patch that does not mention the field must not reset it
+        env.client.post("/api/robot/config", json={"config": {"rate_hz": 3.0}})
+        assert env.client.get("/api/robot/config").json()["config"]["ros_domain_id"] == 42
+
+
 class TestTeleop:
     def test_needs_the_teacher_switch_first(self, env):
         env.as_student("s01")

@@ -6,8 +6,8 @@ without a robot, a socket, or a clock.
 """
 import pytest
 
-from robovla.core.robot_control import (DEFAULT_CONFIG, TELEOP_LIMITS,
-                                        clamp_cmd, control_for, merge_config)
+from robovla.core.robot_control import (DEFAULT_CONFIG, TELEOP_LIMITS, clamp_cmd,
+                                        control_for, merge_config, seat_domain)
 
 NOW = "2026-10-21T09:00:00Z"
 
@@ -107,3 +107,40 @@ class TestControlFor:
         assert control_for({"teleop": {}}, NOW)["mode"] == "model"
         assert control_for({"stop": None, "record": None}, NOW)["mode"] == "model"
         assert control_for({"teleop": {"expires_at": None}}, NOW)["mode"] == "model"
+
+
+class TestSeatDomain:
+    """Seat -> ROS domain: DDS discovery is LAN-wide, so twelve robots on one
+    domain are twelve robots that can publish to each other's /cmd_vel."""
+
+    def test_seat_01_keeps_the_historic_99(self):
+        """The pilot value is not churned: adopting per-seat domains must not
+        move the single-robot rig that every operator shell already uses."""
+        assert seat_domain("s01") == 99
+
+    def test_each_further_seat_gets_its_own_domain(self):
+        got = [seat_domain(f"s{i:02d}") for i in range(1, 13)]
+        assert got == list(range(99, 111))     # s01..s12 -> 99..110, no collisions
+        assert len(set(got)) == 12
+
+    def test_non_seat_accounts_get_the_single_robot_default(self):
+        assert seat_domain("teacher") == 99
+        assert seat_domain("s00") == 99        # the system seat drives nothing
+        assert seat_domain("") == 99
+
+    def test_out_of_range_seats_do_not_produce_an_illegal_domain(self):
+        assert seat_domain("s999") == 99       # 99+998 would be > 232
+        assert seat_domain("s000") == 99
+        assert all(0 <= seat_domain(f"s{i}") <= 232 for i in ("1", "50", "134"))
+
+    def test_the_config_read_uses_the_seat_default(self):
+        assert merge_config(None, "s02")["ros_domain_id"] == 100
+        assert merge_config({}, "s03")["ros_domain_id"] == 101
+
+    def test_an_explicit_stored_domain_beats_the_seat_rule(self):
+        """A teacher may pin a rig: a lab with its own AP, or two robots that
+        must share a domain for a multi-robot lesson."""
+        assert merge_config({"ros_domain_id": 42}, "s05")["ros_domain_id"] == 42
+
+    def test_a_no_console_robot_still_lands_on_99(self):
+        assert merge_config(None)["ros_domain_id"] == 99

@@ -17,7 +17,9 @@ Conventions used below:
 | pi3 | the robot (SSH `adam@192.168.68.80` on the testbed) |
 
 The one environment rule that has bitten twice: **every ROS command on
-the robot runs with `ROS_DOMAIN_ID=99`.** Without it everything
+the robot runs on **its seat's ROS domain** (`s01` = 99, `s02` = 100,
+`c03`… `s12` = 110).** The console assigns it; a robot reads it at bringup and
+your own shell must match it. Without a match everything
 "succeeds" into an empty room — the robot never hears you.
 
 ---
@@ -85,8 +87,9 @@ and the working tree must be reconciled before pulling, not over.
 Verify (each should report a steady rate):
 
 ```bash
-source /opt/ros/jazzy/setup.bash && export ROS_DOMAIN_ID=99
-source ~/rosbot_ws/install/setup.bash
+source /opt/ros/jazzy/setup.bash && source ~/rosbot_ws/install/setup.bash
+# derive the domain instead of typing 99: same source of truth as the robot
+export $(python3 -m rosbot_vla.console_config --shell | sed 's/^export //')
 ros2 topic hz /scan          # LiDAR ~10 Hz
 ros2 topic hz /serial_raw    # base telemetry ~40 Hz
 ```
@@ -278,7 +281,7 @@ until it exists, stopping is physical — say so in the UI.
 
 | symptom | first check | class of cause |
 |---|---|---|
-| robot ignores everything | `echo $ROS_DOMAIN_ID` in YOUR shell | domain ≠ 99 = publishing into an empty room |
+| robot ignores everything | `echo $ROS_DOMAIN_ID` in YOUR shell | your domain ≠ the seat's domain = publishing into an empty room (derive it: `python3 -m rosbot_vla.console_config`) |
 | predict 403 `no active inference slot` | claim a slot; leases die at 300 s idle | serving lifecycle |
 | predict 503/timeout once, then fine | already fixed (serve-warms); older images: retry | cold load used to ride the first step |
 | run stuck queued, blocker `budget` | `nvidia-smi` — something off-books holds VRAM (lanes! leaked slots pre-fix) | GPU tenancy |

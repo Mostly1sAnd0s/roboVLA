@@ -192,6 +192,10 @@ function renderCfg() {
     <div class="field mt2"><label for="c-deadman">deadman (s)</label>
       <input id="c-deadman" type="number" min="0.2" max="5" step="0.1"
              value="${cfg.teleop.deadman_s}" ${isTeacher ? "" : "disabled"}></div>
+    <div class="xs muted">ROS domain is assigned per seat (s01 = 99, s02 = 100,
+      s03 = 101, and so on) so twelve robots on one LAN cannot publish to each
+      other's /cmd_vel. Set a value here to pin this rig; it is what the robot
+      exports at its next bringup, and your own shell must use the same number.</div>
     <div class="btn-row mt2"><button class="secondary" id="savecfg"
       ${editable ? "" : "disabled"}>save config</button>
       <span class="xs muted">the robot picks this up at its next bringup</span></div>`;

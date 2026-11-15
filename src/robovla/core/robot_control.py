@@ -21,6 +21,8 @@ two watchdogs are redundant on purpose.
 
 from __future__ import annotations
 
+import re
+
 from typing import Any
 
 from .audit import parse_rfc3339
@@ -33,9 +35,40 @@ TELEOP_LIMITS = {"vx": (-0.3, 0.3), "vy": (-0.1, 0.1), "wz": (-0.9, 0.9)}
 #: How long a teleop command stays alive if the browser stops refreshing it.
 DEFAULT_DEADMAN_S = 0.5
 
+#: Seat -> ROS domain. DDS discovery is LAN-wide, so a class of twelve robots
+#: sharing one domain is twelve robots that can each publish to the others'
+#: /cmd_vel. The console therefore ASSIGNS a domain per seat instead of hoping
+#: nobody edits a script: seat n gets SEAT_DOMAIN_BASE + (n - 1), and seat 01
+#: keeps 99 — the value the pilot rig, the docs and every operator shell already
+#: use — so adopting this changes nothing for a single-robot testbed.
+#: Seats are s01..s12 in this course; SEAT_MAX keeps a bogus id from producing
+#: a number outside the legal 0..232 range (that falls back to 99, per seat-less
+#: accounts, rather than colliding with another seat).
+SEAT_DOMAIN_BASE = 99
+SEAT_MAX = 134            # 99 + 133 = 232, the top legal ROS domain id
+
+
+def seat_domain(student: str) -> int:
+    """The domain a seat owns: s01 -> 99, s02 -> 100 ... s12 -> 110.
+
+    Accounts that are not a seat (teacher, the s00 system user) get the
+    single-robot default. This is a DEFAULT only: a value stored in the robot
+    config always wins, so a teacher can pin a rig to anything legal.
+    """
+    m = re.fullmatch(r"s(\d{1,3})", str(student or ""))
+    if not m:
+        return DOMAIN_FALLBACK
+    n = int(m.group(1))
+    if n < 1 or n > SEAT_MAX:
+        return DOMAIN_FALLBACK
+    return SEAT_DOMAIN_BASE + (n - 1)
+
+
 #: What a robot asks for at bringup; every field is overridable per student.
+DOMAIN_FALLBACK = 99      # seat-less accounts, and any robot with no console
+
 DEFAULT_CONFIG: dict[str, Any] = {
-    "ros_domain_id": 99,
+    "ros_domain_id": DOMAIN_FALLBACK,
     "rate_hz": 1.0,             # model loop
     "telemetry_rate_hz": 5.0,   # frame + command round trip
     "frame_size": 224,
@@ -58,14 +91,17 @@ def _num(value: Any, lo: float, hi: float, fallback: float) -> float:
     return min(hi, max(lo, v))
 
 
-def merge_config(stored: dict[str, Any] | None) -> dict[str, Any]:
-    """Stored JSON over defaults, deep for the two nested blocks, all clamped.
+def merge_config(stored: dict[str, Any] | None,
+                 student: str = "") -> dict[str, Any]:
+    """Stored JSON over the seat default, deep for nested blocks, all clamped.
 
-    Unknown keys are dropped, so a config written by an older console cannot
-    smuggle a field the node does not understand.
+    ``student`` supplies the default ROS domain (see :func:`seat_domain`); an
+    explicit ``ros_domain_id`` in ``stored`` still wins. Unknown keys are
+    dropped, so a config written by an older console cannot smuggle a field the
+    node does not understand.
     """
     out: dict[str, Any] = {
-        "ros_domain_id": DEFAULT_CONFIG["ros_domain_id"],
+        "ros_domain_id": seat_domain(student),
         "rate_hz": DEFAULT_CONFIG["rate_hz"],
         "telemetry_rate_hz": DEFAULT_CONFIG["telemetry_rate_hz"],
         "frame_size": DEFAULT_CONFIG["frame_size"],

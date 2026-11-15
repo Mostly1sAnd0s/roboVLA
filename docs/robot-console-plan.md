@@ -40,6 +40,21 @@ Confirm each against the node before implementing.
 
 ## Robot-side work (rosBot package)
 
+### Domain per seat (built)
+
+Twelve robots on one domain are twelve robots that can publish to each other's
+`/cmd_vel`, so the console ASSIGNS the domain: seat *n* owns `99 + (n - 1)`
+(`s01` = 99 … `s12` = 110, inside the legal 0-232). Seat 01 keeps 99 on purpose,
+so the pilot rig and every existing operator shell are unaffected — the rule is
+adopted without a migration. A stored value in the robot config always wins,
+which is how a multi-robot lesson or a lab with its own AP pins a rig.
+
+`robot_up.sh` asks the console and exports the answer before ROS starts
+(`python3 -m rosbot_vla.console_config --shell`); the read is best-effort, 3 s,
+exits 0 with the fallback, and can only ever emit digits. A human shell needs the
+same number, so derive it the same way instead of typing 99 — a mismatch is the
+documented silent-empty-room failure.
+
 ### Bringup (open)
 
 `ROS_DOMAIN_ID` is set in the environment before ROS starts, so the console

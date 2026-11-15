@@ -486,7 +486,7 @@ def robot_config(svc: ConsoleService, student: str) -> dict[str, Any]:
         stored = json.loads(raw) if raw else None
     except json.JSONDecodeError:
         stored = None                      # a corrupt row falls back to defaults
-    return merge_config(stored)
+    return merge_config(stored, student)
 
 
 def set_robot_config(svc: ConsoleService, user: dict[str, Any], student: str,
@@ -501,7 +501,9 @@ def set_robot_config(svc: ConsoleService, user: dict[str, Any], student: str,
     if not isinstance(patch, dict):
         raise RobovlaError("validation", "robot config must be an object")
     before = robot_config(svc, student)
-    cfg = merge_config({**before, **patch})
+    # `student` on the merge keeps the seat default available for a field the
+    # patch does not mention; an explicit value in the patch wins
+    cfg = merge_config({**before, **patch}, student)
     svc.storage.set_kv(CONFIG_KEY.format(student), json.dumps(cfg))
     svc.audit(user["user_id"], "robot.config", student, before, cfg)
     return cfg
