@@ -66,6 +66,22 @@ ssh adam@ROBOT_IP
 setsid ~/rosbot_ws/tools/robot_up.sh > /tmp/robot.log 2>&1 < /dev/null & disown
 ```
 
+**Deploying rosBot code to the robot.** `~/rosbot_ws` is one git checkout of
+`adam/rosBot` and `src/rosbot_vla` is tracked in it, so a deploy is a pull and a
+build. Nothing else needs rebuilding unless the pull touched another package
+(`git diff --name-only HEAD origin/main -- src | grep -v '^src/rosbot_vla/'`).
+
+```bash
+cd ~/rosbot_ws && git pull --ff-only
+. /opt/ros/jazzy/setup.bash && colcon build --packages-select rosbot_vla
+```
+
+The install is a copy, not `--symlink-install`, so the build step is not
+optional: editing `src/` alone changes nothing the robot runs. Restart any
+running `vla_drive` afterwards. Before a `git pull`, check `git status` — if
+`src/rosbot_vla/` shows as untracked, someone has been copying files in by hand
+and the working tree must be reconciled before pulling, not over.
+
 Verify (each should report a steady rate):
 
 ```bash
