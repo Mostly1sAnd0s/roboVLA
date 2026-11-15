@@ -26,7 +26,9 @@
     <div class="card">
       <div class="card-head"><h2>View</h2>
         <span class="xs muted" id="framenote"></span></div>
-      <img id="frame" class="eye frame" alt="robot camera">
+      <img id="frame" class="eye frame" alt="robot camera" hidden>
+      <div id="frameph" class="frame row between" style="justify-content:center;color:var(--dim);font-size:var(--t-sm)">
+        no frame yet — the robot sends one with its telemetry</div>
       <div class="metrics mt2" id="state"></div>
       <div class="xs muted mt2" id="quiet"></div>
     </div>
@@ -229,6 +231,8 @@ async function refresh() {
   const v = s.view;
   if (v) {
     $("#frame").src = `data:image/jpeg;base64,${v.frame_b64}`;
+    $("#frame").hidden = false;
+    $("#frameph").hidden = true;
     lastSeq = v.seq;
     const sp = Math.hypot(v.action?.[0] ?? 0, v.action?.[1] ?? 0);
     const st = v.state ?? {};

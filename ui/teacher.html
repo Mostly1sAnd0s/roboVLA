@@ -11,44 +11,75 @@
 <main class="container">
   <div class="page-head"><h1>Teacher panel <span class="muted small">(every action is audit-logged, §9.7)</span></h1></div>
   <div class="grid grid--2">
-    <div class="card">
-      <h2>Nodes (the registry is the fleet config, §8.2)</h2>
-      <div class="tablewrap"><table id="nodes"><thead><tr>
-        <th>node</th><th>state</th><th>VRAM</th><th>slots</th><th>presets</th><th>orphan</th><th></th>
-      </tr></thead><tbody></tbody></table>
-      <details><summary>add node</summary>
-        <label>id</label><input id="nid" placeholder="node2">
-        <label>label</label><input id="nlabel">
-        <label>agent LAN ip</label><input id="nip" placeholder="10.0.x.x">
-        <label>agent port</label><input id="nport" type="number" value="8601">
-        <label>vram_gb</label><input id="nvram" type="number" value="32">
-        <label>train_slots</label><input id="ntrain" type="number" value="1">
-        <label>infer_slots</label><input id="ninfer" type="number" value="2">
-        <label>train budget GB</label><input id="ntgb" type="number" value="18">
-        <label>infer budget GB</label><input id="nigb" type="number" value="11">
-        <label>batch presets (comma)</label><input id="npresets" value="1,4,8">
-        <label>priority</label><input id="nprio" type="number" value="1">
-        <label class="row"><input id="nselect" type="checkbox"> student-selectable</label>
-        <button class="secondary" id="nadd">Add node (agent token shown once)</button>
-        <pre id="nout" class="log" style="display:none"></pre>
-      </details>
-      <p class="small muted">Node host lifecycle (container restart / image update / GPU reset)
-        is a host-side one-liner on the node, not a panel action — <code>robovla-node</code> (§8.2).</p>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Nodes</h2>
+          <span class="muted xs">the registry is the fleet config (§8.2)</span></div>
+        <div class="tablewrap"><table id="nodes"><thead><tr>
+          <th>node</th><th>state</th><th class="num nowrap">VRAM</th><th class="nowrap">slots</th>
+          <th class="nowrap">presets</th><th>orphan</th><th></th>
+        </tr></thead><tbody></tbody></table></div>
+        <details><summary>add node</summary>
+          <div class="field-row mt2">
+            <div class="field" style="flex:0 1 120px"><label for="nid">id</label>
+              <input id="nid" placeholder="node2"></div>
+            <div class="field grow"><label for="nlabel">label</label><input id="nlabel"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="nip">agent LAN ip</label>
+              <input id="nip" placeholder="10.0.x.x"></div>
+            <div class="field" style="flex:0 1 120px"><label for="nport">port</label>
+              <input id="nport" type="number" value="8601"></div>
+            <div class="field" style="flex:0 1 120px"><label for="nvram">VRAM GB</label>
+              <input id="nvram" type="number" value="32"></div>
+          </div>
+          <div class="field-row">
+            <div class="field" style="flex:0 1 120px"><label for="ntrain">train slots</label>
+              <input id="ntrain" type="number" value="1"></div>
+            <div class="field" style="flex:0 1 120px"><label for="ninfer">infer slots</label>
+              <input id="ninfer" type="number" value="2"></div>
+            <div class="field" style="flex:0 1 120px"><label for="ntgb">train GB</label>
+              <input id="ntgb" type="number" value="18"></div>
+            <div class="field" style="flex:0 1 120px"><label for="nigb">infer GB</label>
+              <input id="nigb" type="number" value="11"></div>
+          </div>
+          <div class="field-row">
+            <div class="field"><label for="npresets">batch presets (comma)</label>
+              <input id="npresets" value="1,4,8"></div>
+            <div class="field" style="flex:0 1 120px"><label for="nprio">priority</label>
+              <input id="nprio" type="number" value="1"></div>
+          </div>
+          <div class="row mt2">
+            <label class="check"><input id="nselect" type="checkbox"> student-selectable</label>
+            <button class="secondary" id="nadd">Add node (agent token shown once)</button>
+          </div>
+          <pre id="nout" class="log" style="display:none"></pre>
+        </details>
+        <p class="small muted mb0">Node host lifecycle (container restart / image update /
+          GPU reset) is a host-side one-liner on the node, not a panel action —
+          <code>robovla-node</code> (§8.2).</p>
+      </div>
     </div>
-    <div class="card">
-      <h2>Queue ops</h2>
-      <div class="tablewrap"><table id="jobs"><thead><tr>
-        <th>job</th><th>student</th><th>type</th><th>state</th><th>node</th><th></th>
-      </tr></thead><tbody></tbody></table>
-      <h2 style="margin-top:16px">System</h2>
-      <div class="row"><span class="label">maintenance</span>
-        <button class="secondary" id="maint">toggle</button>
-        <span id="maintstate" class="small muted"></span></div>
-      <div class="row"><span class="label">backup</span>
-        <button class="secondary" id="bk">trigger backup</button>
-        <span id="bkstate" class="small muted"></span></div>
-      <h2 style="margin-top:16px">Audit (latest 30)</h2>
-      <div id="audit" class="small mono" style="max-height:260px; overflow:auto"></div>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Queue ops</h2></div>
+        <div class="tablewrap"><table id="jobs"><thead><tr>
+          <th>job</th><th>student</th><th>type</th><th>state</th><th>node</th><th></th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>System</h2></div>
+        <div class="row"><span class="label">maintenance</span>
+          <button class="secondary sm" id="maint">toggle</button>
+          <span id="maintstate" class="small muted"></span></div>
+        <div class="row mt2"><span class="label">backup</span>
+          <button class="secondary sm" id="bk">trigger backup</button>
+          <span id="bkstate" class="small muted"></span></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Audit (latest 30)</h2></div>
+        <div id="audit" class="small mono" style="max-height:260px; overflow:auto"></div>
+      </div>
     </div>
   </div>
 </main>
@@ -65,16 +96,16 @@ async function loadNodes() {
   $("#nodes tbody").innerHTML = nodes.map(n => `<tr>
     <td><b>${esc(n.label ?? n.id)}</b><br><span class="muted mono small">${esc(n.id)}</span></td>
     <td>${badge(n.enabled ? (n.online ? "online" : "offline") : "disabled")}</td>
-    <td>${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.gpu.vram_gb} GB</td>
-    <td>T${n.gpu.train_slots} / I${n.gpu.infer_slots}</td>
+    <td class="num nowrap">${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.gpu.vram_gb} GB</td>
+    <td class="nowrap">T${n.gpu.train_slots} / I${n.gpu.infer_slots}</td>
     <td class="mono small">${n.presets?.batch?.join("/") ?? ""}</td>
     <td>${n.orphan_alert ? `<span style="color:var(--err)">⚠ ${n.orphan_pids?.join(",")}</span>` : "—"}</td>
-    <td class="small">
-      <button class="secondary" data-act="probe" data-n="${esc(n.id)}">probe</button>
-      <button class="secondary" data-act="logs" data-n="${esc(n.id)}">logs</button>
-      <button class="danger" data-act="purge" data-n="${esc(n.id)}"
-        ${n.orphan_pids?.length ? "" : "disabled"}>purge</button>
-    </td></tr>`).join("");
+    <td><div class="btn-row">
+      <button class="secondary sm" data-act="probe" data-n="${esc(n.id)}">probe</button>
+      <button class="secondary sm" data-act="logs" data-n="${esc(n.id)}">logs</button>
+      <button class="danger sm" data-act="purge" data-n="${esc(n.id)}"
+        ${n.orphan_pids?.length ? "" : "disabled"}>purge</button></div>
+    </td></tr>`).join("") || `<tr><td colspan="7" class="muted">no nodes</td></tr>`;
   $$("[data-act]").forEach(b => b.addEventListener("click", () => act(b.dataset.act, b.dataset.n)));
 }
 
@@ -105,26 +136,28 @@ async function loadJobs() {
     <td class="mono small"><a href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
     <td>${esc(j.student)}</td><td>${esc(j.job_type)}</td>
     <td>${badge(j.state)}</td><td class="muted">${esc(j.node_id ?? "auto")}</td>
-    <td class="small">
+    <td><div class="btn-row">
       ${j.state === "queued"
-        ? `<button class="secondary" data-j="${esc(j.job_id)}" data-a="bump">run now</button>
-           <button class="secondary" data-j="${esc(j.job_id)}" data-a="requeue">pin</button>` : ""}
+        ? `<button class="secondary sm" data-j="${esc(j.job_id)}" data-a="bump">run now</button>
+           <button class="secondary sm" data-j="${esc(j.job_id)}" data-a="requeue">pin</button>` : ""}
       ${j.state !== "done" && j.state !== "failed" && j.state !== "killed"
-        ? `<button class="danger" data-j="${esc(j.job_id)}" data-a="kill">kill</button>` : ""}
+        ? `<button class="danger sm" data-j="${esc(j.job_id)}" data-a="kill">kill</button>` : ""}
       ${j.state !== "done" && j.state !== "failed" && j.state !== "killed"
-        ? `<button class="secondary" data-j="${esc(j.job_id)}" data-a="complete">complete</button>` : ""}
-    </td></tr>`).join("");
+        ? `<button class="secondary sm" data-j="${esc(j.job_id)}" data-a="complete">complete</button>` : ""}
+    </div></td></tr>`).join("") || `<tr><td colspan="6" class="muted">nothing in the queue</td></tr>`;
   $$("[data-j]").forEach(b => b.addEventListener("click", async () => {
     const { j: job, a } = b.dataset;
     try {
       if (a === "bump") await api(`/api/admin/jobs/${job}/bump`, { method: "POST" });
       else if (a === "kill") await api(`/api/admin/jobs/${job}/kill`, { method: "POST" });
       else if (a === "requeue") {
-        const node = prompt("pin to node (empty = auto):");
-        if (node == null) return;
+        const node = await ask({ title: `Pin ${job} to a node`,
+          body: "empty = auto (first-fit across the fleet)", okLabel: "Requeue" });
+        if (node === null) return;
         await api(`/api/admin/jobs/${job}/requeue`, { method: "POST", body: { node_id: node || null } });
       } else if (a === "complete") {
-        const note = prompt("manual completion note (required, §8.3):");
+        const note = await ask({ title: "Manual completion note (required, §8.3)",
+          required: true, okLabel: "Complete" });
         if (!note) return;
         await api(`/api/admin/jobs/${job}/complete`, { method: "POST", body: { note } });
       }

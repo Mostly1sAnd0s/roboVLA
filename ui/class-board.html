@@ -9,32 +9,37 @@
 <body>
 <nav id="nav" hx-boost="true"></nav>
 <main class="container">
-  <div class="row" style="margin-bottom:10px">
-    <div class="page-head"><h1 class="grow">Class board</h1></div>
-    <button class="secondary" onclick="window.print()">print</button>
+  <div class="page-head">
+    <h1>Class board</h1>
+    <span class="muted small">the whole class at a glance</span>
+    <div class="actions"><button class="secondary" onclick="window.print()">print</button></div>
   </div>
-  <div class="grid cols3" id="summary"></div>
-  <div class="grid cols2" style="margin-top:12px">
+  <div class="metrics card" id="summary"></div>
+  <div class="grid mt3">
     <div class="card">
-      <h2>Queue (all students, live)</h2>
+      <div class="card-head"><h2>Queue (all students, live)</h2></div>
       <div class="tablewrap"><table id="queue"><thead><tr>
         <th>job</th><th>student</th><th>type</th><th>state</th><th>pos</th><th>ETA</th>
-      </tr></thead><tbody></tbody></table>
+      </tr></thead><tbody></tbody></table></div>
     </div>
-    <div class="card">
-      <h2>Inference slots</h2>
-      <div class="tablewrap"><table id="slots"><thead><tr>
-        <th>slot job</th><th>student</th><th>run</th><th>state</th><th>pos</th>
-      </tr></thead><tbody></tbody></table>
-      <h2 style="margin-top:14px">Nodes</h2>
-      <div id="nodes" class="small"></div>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Inference slots</h2></div>
+        <div class="tablewrap"><table id="slots"><thead><tr>
+          <th>slot job</th><th>student</th><th>run</th><th>state</th><th>pos</th>
+        </tr></thead><tbody></tbody></table></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Nodes</h2></div>
+        <div id="nodes" class="small"></div>
+      </div>
     </div>
   </div>
-  <div class="card" style="margin-top:12px" id="allcard">
-    <h2>All runs</h2>
+  <div class="card mt3" id="allcard">
+    <div class="card-head"><h2>All runs</h2></div>
     <div class="tablewrap"><table id="all"><thead><tr>
       <th>job</th><th>student</th><th>type</th><th>dataset</th><th>state</th><th>node</th><th>submitted</th>
-    </tr></thead><tbody></tbody></table>
+    </tr></thead><tbody></tbody></table></div>
   </div>
 </main>
 <script src="/ui/vendor/htmx.min.js"></script>
@@ -53,13 +58,11 @@ async function load() {
   ]);
   const running = q.queue.filter(j => j.state === "running").length;
   const queued = q.queue.filter(j => j.state === "queued").length;
-  $("#summary").innerHTML = `
-    <div class="card"><span class="muted small">running</span>
-      <div style="font-size:22px">${running}</div></div>
-    <div class="card"><span class="muted small">queued</span>
-      <div style="font-size:22px">${queued}</div></div>
-    <div class="card"><span class="muted small">maintenance</span>
-      <div style="font-size:22px">${h.service.maintenance ? "ON" : "off"}</div></div>`;
+  $("#summary").innerHTML = [
+    ["running", running], ["queued", queued],
+    ["maintenance", h.service.maintenance ? "ON" : "off"],
+  ].map(([k, v]) => `<div class="metric"><div class="k">${k}</div>
+      <div class="v">${esc(String(v))}</div></div>`).join("");
 
   $("#queue tbody").innerHTML = q.queue.map(j => `<tr>
       <td><a class="mono small" href="/ui/run.html?job=${esc(j.job_id)}">${esc(j.job_id)}</a></td>
@@ -78,10 +81,11 @@ async function load() {
     || `<tr><td colspan="5" class="muted">no slots claimed</td></tr>`;
 
   $("#nodes").innerHTML = h.nodes.map(n =>
-    `<div class="row"><span class="grow">${badge(n.online ? "online" : "offline")}
+    `<div class="row" style="padding:3px 0"><span class="grow">${badge(n.online ? "online" : "offline")}
      <b>${esc(n.label ?? n.id)}</b></span>
-     <span>${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.vram_gb} GB free ·
-     queue ${n.queue_depth}</span></div>`).join("");
+     <span class="muted small">${n.free_gb != null ? n.free_gb.toFixed(1) : "?"}/${n.vram_gb} GB free
+     · queue ${n.queue_depth}</span></div>`).join("")
+    || `<div class="empty">no nodes in the fleet</div>`;
 
   if (isTeacher) {
     const { runs } = await api("/api/runs");
@@ -91,7 +95,8 @@ async function load() {
         <td class="muted small">${esc(j.dataset)}</td>
         <td>${badge(j.state)}</td>
         <td class="muted">${esc(j.node_id ?? "auto")}</td>
-        <td class="muted small">${fmtTs(j.submitted_at)}</td></tr>`).join("");
+        <td class="muted small">${fmtTs(j.created_at)}</td></tr>`).join("")
+      || `<tr><td colspan="7" class="muted">no runs yet</td></tr>`;
   }
 }
 load().catch(err => toast(err.message, true));

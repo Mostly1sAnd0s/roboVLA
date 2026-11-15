@@ -40,7 +40,7 @@ async function me() {
 function badge(state) {
   const cls = ["running","ready","queued","done","failed","killed","uploading",
                "preparing","finishing","rejected","online","offline","disabled",
-               "selected","estop","paused"]
+               "selected","estop","paused","active","inactive"]
               .includes(state) ? state : "";
   return `<span class="badge ${cls}">${state ?? "?"}</span>`;
 }

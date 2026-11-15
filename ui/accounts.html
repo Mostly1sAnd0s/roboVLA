@@ -11,26 +11,33 @@
 <main class="container">
   <div class="page-head"><h1>Student accounts <span class="muted small">(§8.1 — one-time passwords on paper, no email)</span></h1></div>
   <div class="grid grid--2">
-    <div class="card">
-      <h2>Roster</h2>
-      <div class="tablewrap"><table id="users"><thead><tr>
-        <th>id</th><th>name</th><th>role</th><th>state</th><th>limits</th><th></th>
-      </tr></thead><tbody></tbody></table>
-      <h2 style="margin-top:14px">Add student</h2>
-      <div class="row">
-        <input id="uid" placeholder="s13" style="max-width:90px">
-        <input id="uname" placeholder="display name">
-        <button id="add">create (password shown once)</button>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><h2>Roster</h2></div>
+        <div class="tablewrap"><table id="users"><thead><tr>
+          <th>id</th><th>name</th><th>role</th><th>state</th><th>limits</th><th></th>
+        </tr></thead><tbody></tbody></table></div>
       </div>
-      <pre id="addout" class="log" style="display:none"></pre>
-      <details><summary>import CSV roster (id,name,email,role,active)</summary>
-        <textarea id="csv" placeholder="id,name,email,role,active&#10;s01,Avery,s01@campus,student,true"></textarea>
-        <button class="secondary" id="imp">import</button>
-      </details>
+      <div class="card">
+        <div class="card-head"><h2>Add student</h2></div>
+        <div class="field-row" style="align-items:end">
+          <div class="field" style="flex:0 1 110px"><label for="uid">id</label>
+            <input id="uid" placeholder="s13"></div>
+          <div class="field grow"><label for="uname">display name</label>
+            <input id="uname"></div>
+          <div class="field" style="flex:0 0 auto"><label>&nbsp;</label>
+            <button id="add">create (password shown once)</button></div>
+        </div>
+        <pre id="addout" class="log" style="display:none"></pre>
+        <details><summary>import CSV roster (id,name,email,role,active)</summary>
+          <textarea id="csv" placeholder="id,name,email,role,active&#10;s01,Avery,s01@campus,student,true"></textarea>
+          <div class="btn-row mt2"><button class="secondary" id="imp">import</button></div>
+        </details>
+      </div>
     </div>
     <div class="card">
-      <h2>User detail</h2>
-      <div id="detail" class="small">pick a student →</div>
+      <div class="card-head"><h2>User detail</h2></div>
+      <div id="detail" class="small">pick a student from the roster →</div>
     </div>
   </div>
 </main>
@@ -50,9 +57,9 @@ async function loadUsers() {
     <td class="mono">${esc(u.user_id)}</td>
     <td>${esc(u.display_name)}</td>
     <td>${esc(u.role)}</td>
-    <td>${u.active ? badge("online") : badge("offline")}
-      <span class="muted small">${u.active ? "active" : "inactive"}</span></td>
-    <td class="muted small">r${u.max_running ?? "–"} q${u.max_queued ?? "–"}</td>
+    <td>${badge(u.active ? "active" : "inactive")}</td>
+    <td class="muted small">${u.max_running == null && u.max_queued == null
+      ? "default" : `r${u.max_running ?? "–"} q${u.max_queued ?? "–"}`}</td>
     <td class="small"><a href="#" data-u="${esc(u.user_id)}">manage</a></td>
   </tr>`).join("");
   $$("[data-u]").forEach(a => a.addEventListener("click", async (e) => {
@@ -86,13 +93,13 @@ async function showDetail(uid) {
     <div class="row"><span class="label">Pi token</span>
       <button class="secondary" id="tok">generate/rotate</button>
       <button class="danger" id="tokrev">revoke</button></div>
-    <p class="muted" style="margin-top:10px">sessions (${sess.sessions.length}):</p>
+    <p class="muted mt3 mb0">sessions (${sess.sessions.length}):</p>
     <div id="sess"></div>
     <pre id="dout" class="log" style="display:none"></pre>`;
   $("#sess").innerHTML = sess.sessions.map(s =>
-    `<div class="row"><span class="mono small">${esc(s.session_id)}</span>
-     <span class="muted small">expires ${fmtTs(s.expires_at)}</span>
-     <button class="danger small" data-sid="${esc(s.session_id)}">revoke</button></div>`).join("")
+    `<div class="row" style="padding:2px 0"><span class="mono xs">${esc(s.session_id)}</span>
+     <span class="muted small grow right">expires ${fmtTs(s.expires_at)}</span>
+     <button class="danger sm" data-sid="${esc(s.session_id)}">revoke</button></div>`).join("")
     || `<span class="muted">none</span>`;
   $$("[data-sid]").forEach(b => b.addEventListener("click", async () => {
     await api(`/api/admin/users/${uid}/sessions/${b.dataset.sid}`, { method: "DELETE" });

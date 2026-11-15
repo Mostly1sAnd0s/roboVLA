@@ -15,15 +15,14 @@
     <div class="actions">
       <label class="check"><input type="checkbox" id="shapeOn" checked>
         price my run</label>
-      <select id="jobtype" class="xs" style="max-width:130px">
+      <select id="jobtype">
         <option value="train">train</option><option value="smoke">smoke</option>
         <option value="crosscheck">crosscheck</option>
       </select>
-      <div class="unit" style="max-width:170px">
-        <input id="batch" type="number" min="1" value="1" title="batch">
-        <input id="epochs" type="number" min="1" value="1" title="epochs">
-        <span class="suffix">ep</span>
-      </div>
+      <div class="unit"><input id="batch" type="number" min="1" value="1"
+        title="batch"><span class="suffix">batch</span></div>
+      <div class="unit"><input id="epochs" type="number" min="1" value="1"
+        title="epochs"><span class="suffix">epochs</span></div>
     </div>
   </div>
 
@@ -71,10 +70,6 @@ function jobLine(j) {
     <span class="grow right muted">${fmtEta(j.est_duration_s)}</span></div>`;
 }
 
-function slotPill(used, total, kind) {
-  const free = total - used;
-  return `<span class="badge ${free > 0 ? "ready" : "running"}">${kind} ${used}/${total}</span>`;
-}
 
 async function load() {
   const params = {};
@@ -96,7 +91,7 @@ async function load() {
     const why = n.selectable ? "" :
       `<div class="xs warn-text mt2">Not pickable: ${n.reasons.join(" · ")}</div>`;
     const teacherBit = isTeacher ? `
-      <div class="row xs mt2">
+      <div class="row xs">
         <span class="muted mono">${esc(n.agent ?? "")}</span>
         <label class="check grow"><input type="checkbox" class="selTgl" data-n="${esc(n.id)}"
           ${n.student_selectable ? "checked" : ""}> students may pick this node</label>
@@ -111,23 +106,33 @@ async function load() {
               <button class="sm">Run here</button></a>` : badge("selected")}</div>
       </div>
       ${vramBar(n)}
-      <div class="row mt2">
-        ${slotPill(n.train_used, n.train_slots, "train")}
-        ${slotPill(n.infer_used, n.infer_slots, "infer")}
-        <span class="xs muted">batches ${n.batch_presets.join("/")} · prio ${n.priority}</span>
-        <span class="grow right small ${wait === "starts immediately" ? "ok" : "muted"}">${wait ?? "—"}</span>
+      <div class="metrics mt2">
+        <div class="metric"><div class="k">train slots</div>
+          <div class="v small">${n.train_used}/${n.train_slots}</div></div>
+        <div class="metric"><div class="k">infer slots</div>
+          <div class="v small">${n.infer_used}/${n.infer_slots}</div></div>
+        <div class="metric"><div class="k">batches</div>
+          <div class="v small">${n.batch_presets.join("/")}</div></div>
+        <div class="metric"><div class="k">priority</div>
+          <div class="v small">${n.priority}</div></div>
+        <div class="metric"><div class="k">starts</div>
+          <div class="v small ${wait === "starts immediately" ? "ok" : ""}">${wait ?? "—"}</div></div>
       </div>
       ${why}
       ${n.est_run_s ? `<div class="xs muted mt2">your run here ≈ ${fmtEta(n.est_run_s)}
         (job estimate, not a promise)</div>` : ""}
-      <div class="mt2">
-        <div class="xs muted">running now</div>
-        ${n.running.map(jobLine).join("") || '<div class="xs muted">idle</div>'}
-        <div class="xs muted mt2">pinned queue (${n.queued.length})</div>
-        ${n.queued.map(jobLine).join("") || '<div class="xs muted">nobody in line</div>'}
-        <div class="xs muted mt2">+ ${n.auto_queued} auto job(s) first-fitting across the fleet</div>
+      <div class="grid grid--2 mt2">
+        <div>
+          <div class="xs muted">running now</div>
+          ${n.running.map(jobLine).join("") || '<div class="xs muted">idle</div>'}
+        </div>
+        <div>
+          <div class="xs muted">pinned queue (${n.queued.length})</div>
+          ${n.queued.map(jobLine).join("") || '<div class="xs muted">nobody in line</div>'}
+          <div class="xs muted mt2">+ ${n.auto_queued} auto job(s) first-fitting across the fleet</div>
+        </div>
       </div>
-      ${teacherBit}
+      ${teacherBit ? `<hr class="mt2">${teacherBit}` : ""}
     </div>`;
   }).join("") || `<div class="empty">No nodes in the fleet.</div>`;
 

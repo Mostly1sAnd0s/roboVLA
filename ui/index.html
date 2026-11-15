@@ -56,7 +56,8 @@
     <div class="card">
       <div class="card-head"><h2>Class activity</h2>
         <span class="muted xs">live (SSE)</span></div>
-      <div id="feed" class="small" style="--lmax:340px; max-height:340px; overflow:auto"></div>
+      <div id="feed" class="small" style="--lmax:340px; max-height:340px; overflow:auto">
+        <div class="empty">No class events yet — this stream is live.</div></div>
     </div>
   </div>
 </main>
@@ -130,11 +131,12 @@ const FEED = {
 };
 sse("class", (t, d) => {
   const line = FEED[t] ? FEED[t](d) : `${t}: ${JSON.stringify(d).slice(0, 80)}`;
+  const feed = $("#feed");
+  if (feed.firstElementChild?.classList.contains("empty")) feed.innerHTML = "";
   const el = document.createElement("div");
   el.className = "row";
   el.innerHTML = `<span class="muted mono xs">${new Date().toISOString().slice(11, 19)}</span>
                   <span class="grow">${esc(line)}</span>`;
-  const feed = $("#feed");
   feed.prepend(el);
   while (feed.children.length > 60) feed.lastChild.remove();
 });

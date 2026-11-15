@@ -94,7 +94,13 @@ nav .who { color: var(--dim); font-size: var(--t-sm); white-space: nowrap; }
 @media (max-width: 900px) { .grid--2 { grid-template-columns: 1fr; } }
 .stack { display: flex; flex-direction: column; gap: var(--s3); }
 .row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s2); }
-.row .label { color: var(--dim); font-size: var(--t-sm); flex: 0 0 auto; }
+/* A .label in a row is a column header: give it a stable width so the
+   controls in stacked rows line up with each other. */
+.row .label { color: var(--dim); font-size: var(--t-sm); flex: 0 0 auto;
+              min-width: 6.5em; }
+/* Actions inside a table cell stay on one line: a button that wraps to a
+   second line makes the row look broken. */
+td .btn-row { flex-wrap: nowrap; }
 .grow { flex: 1 1 auto; min-width: 0; }
 .between { justify-content: space-between; }
 .wrap-none { flex-wrap: nowrap; }
@@ -105,6 +111,10 @@ nav .who { color: var(--dim); font-size: var(--t-sm); white-space: nowrap; }
   border-radius: var(--r); padding: var(--s3) var(--s4); min-width: 0;
 }
 .card + .card { margin-top: var(--s3); }
+/* But not inside a grid or a stack: those containers own their spacing (grid
+   items apply margins without collapsing, so the rule shifted every card
+ after the first one down; .stack already adds the gap). */
+.grid > .card + .card, .stack > .card + .card { margin-top: 0; }
 .card-head {
   display: flex; align-items: baseline; gap: var(--s2); flex-wrap: wrap;
   margin-bottom: var(--s3);
@@ -154,6 +164,8 @@ td.truncate, th.truncate { max-width: 22ch; overflow: hidden;
 .badge.uploading, .badge.preparing, .badge.finishing, .badge.disabled, .badge.paused {
   color: var(--warn); border-color: var(--warn);
 }
+.badge.active { color: var(--ok); border-color: var(--ok); }
+.badge.inactive { color: var(--err); border-color: var(--err); }
 
 /* ---- forms ----------------------------------------------------------------- */
 /* A field is label + control + hint. Two controls on one line use .field-row
@@ -180,6 +192,12 @@ textarea { font-family: var(--mono); font-size: var(--t-sm); min-height: 72px; r
 .unit { display: flex; align-items: center; gap: var(--s2); }
 .unit input { flex: 1 1 auto; }
 .unit .suffix { color: var(--dim); font-size: var(--t-xs); white-space: nowrap; }
+
+/* Compact controls in a page-head action bar keep their own width: the
+   global width:100% is for form fields, not for a row of tools. */
+.actions select { width: auto; }
+.actions input[type="number"] { width: 68px; flex: 0 0 auto; }
+.actions .unit { flex: 0 0 auto; }
 
 button {
   padding: 7px 14px; background: var(--acc); color: #04121c; border: 1px solid transparent;
@@ -251,8 +269,8 @@ canvas.chart {
 pre.log {
   background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-sm);
   padding: var(--s2) var(--s3); font-family: var(--mono); font-size: var(--t-xs);
-  max-height: var(--lmax, 300px); overflow: auto; white-space: pre-wrap;
-  word-break: break-word; margin: var(--s2) 0 0;
+  max-height: var(--lmax, 300px); min-height: 64px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; margin: var(--s2) 0 0;
 }
 
 kbd {

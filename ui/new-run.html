@@ -21,7 +21,7 @@
         <div class="field-row">
           <div class="field"><label for="ds">Dataset (ready only)</label>
             <select id="ds"></select></div>
-          <div class="field" style="flex:0 1 160px"><label for="type">Job type</label>
+          <div class="field" style="flex:0 1 250px"><label for="type">Job type</label>
             <select id="type">
               <option value="smoke">smoke (fast, no ticket)</option>
               <option value="train">train (ticket required)</option>
@@ -144,8 +144,10 @@ async function loadEndpoints() {
           <i style="width:${Math.max(0, Math.min(100, n.used_pct))}%"></i></div>
         <div class="row xs mt2">
           <span class="muted">${n.free_gb}/${n.vram_gb} GB</span>
-          <span class="grow right ${n.train_used >= n.train_slots ? "warn-text" : "ok"}">${
-            n.queued.length} in line · ${wait ?? "unavailable"}</span>
+          <span class="grow right muted">${n.queued.length} in line ·
+            <span class="${wait == null ? "err-text"
+              : n.train_used >= n.train_slots || n.queued.length ? "warn-text" : "ok"}">${
+              wait ?? "unavailable"}</span></span>
         </div>
         ${n.selectable ? "" : `<div class="xs err-text mt2">${n.reasons.join(" · ")}</div>`}
       </label>`;
