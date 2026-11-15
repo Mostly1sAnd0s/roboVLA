@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -39,16 +40,108 @@ def _loads(value: str | None) -> Any:
     return None if value is None else json.loads(value)
 
 
+class _Result:
+    """A finished statement, detached from the connection.
+
+    ``Storage.execute`` reads the whole result out of SQLite while it holds the
+    lock and hands back this object. It behaves like the sqlite3 cursor the
+    call sites already use (``fetchone``/``fetchall``/iteration/``rowcount``/
+    ``lastrowid``) but never touches the connection again, so a cursor is never
+    read from two threads at once.
+    """
+
+    __slots__ = ("_rows", "_i", "rowcount", "lastrowid", "description")
+
+    def __init__(self, rows: list, rowcount: int, lastrowid, description) -> None:
+        self._rows = rows
+        self._i = 0
+        self.rowcount = rowcount
+        self.lastrowid = lastrowid
+        self.description = description
+
+    def fetchone(self):
+        if self._i >= len(self._rows):
+            return None
+        row = self._rows[self._i]
+        self._i += 1
+        return row
+
+    def fetchmany(self, n: int = 1):
+        out = self._rows[self._i:self._i + n]
+        self._i += len(out)
+        return out
+
+    def fetchall(self):
+        out = self._rows[self._i:]
+        self._i = len(self._rows)
+        return out
+
+    def __iter__(self):
+        while True:
+            row = self.fetchone()
+            if row is None:
+                return
+            yield row
+
+
+class _SafeConn:
+    """One sqlite3 connection, serialized across threads.
+
+    The console shares a single connection (WAL). FastAPI runs the sync
+    dependencies (``current_user`` is one) in a thread pool, while the event
+    loop, the scheduler tick, and ``asyncio.to_thread`` jobs use the same
+    connection. The GIL does NOT make a connection safe to use concurrently:
+    two threads sharing one Connection/Cursor return garbage — spurious ``None``
+    reads (which surfaced as false "session expired" -> 401 -> a random redirect
+    to the login page) and ``InterfaceError``/``IndexError`` (which surfaced as
+    500s). A single reentrant lock covers every statement and the fetch that
+    follows it. Rows are materialized inside the lock, so the connection is only
+    ever touched by one thread at a time. Small LAN database: materializing a
+    result is cheap.
+    """
+
+    def __init__(self, db: sqlite3.Connection) -> None:
+        self._db = db
+        self._lock = threading.RLock()
+
+    def execute(self, sql: str, params=()) -> _Result:
+        with self._lock:
+            cur = self._db.execute(sql, params)
+            rows = cur.fetchall() if cur.description is not None else []
+            return _Result(rows, cur.rowcount, cur.lastrowid, cur.description)
+
+    def executescript(self, sql: str) -> None:
+        with self._lock:
+            self._db.executescript(sql)
+
+    def commit(self) -> None:
+        with self._lock:
+            self._db.commit()
+
+    @property
+    def row_factory(self):
+        return self._db.row_factory
+
+    @row_factory.setter
+    def row_factory(self, value) -> None:
+        self._db.row_factory = value
+
+    def close(self) -> None:
+        with self._lock:
+            self._db.close()
+
+
 class Storage:
     """All console state in one SQLite file (WAL). Sync API; the service wraps
     calls in ``asyncio.to_thread`` where latency matters (LAN, small DB)."""
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._db = sqlite3.connect(
-            self.path, isolation_level=None, check_same_thread=False)
-        # single console process; access is serialized by the GIL, and WAL
-        # keeps readers from blocking the scheduler (design §10)
+        # single console process; WAL keeps readers from blocking the scheduler
+        # (design §10). Thread safety is NOT free, however, so the connection is
+        # wrapped in _SafeConn — see that class for the failure it prevents.
+        self._db = _SafeConn(sqlite3.connect(
+            self.path, isolation_level=None, check_same_thread=False))
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")

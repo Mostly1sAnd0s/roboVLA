@@ -2,10 +2,13 @@
 
 Covers: users/limits, sessions (expiry + sliding TTL), Pi tokens (hashed at
 rest, revoke), agent tokens, datasets + chunked-upload accounting, tickets,
-jobs + 24 h idempotency window, artifacts, audit append/filter, backups, kv.
+jobs + 24 h idempotency window, artifacts, audit append/filter, backups, kv,
+and concurrent access (one connection, many threads).
 """
 
 from __future__ import annotations
+
+import threading
 
 import pytest
 
@@ -205,3 +208,41 @@ def test_backups_and_kv(store):
     store.set_kv("maintenance", "on")
     assert store.get_kv("maintenance") == "on"
     assert store.get_kv("missing") is None
+
+
+# -- concurrency --------------------------------------------------------------
+
+
+def test_one_connection_is_safe_under_concurrent_threads(store):
+    """Regression: the console shares one SQLite connection, and FastAPI runs
+    the sync ``current_user`` dependency in a thread pool while the event loop
+    and the scheduler tick use the same connection. Before the connection was
+    serialized, a concurrent ``get_session`` read corrupted rows and returned
+    ``None`` at random, which surfaced as a false "session expired" -> 401 and
+    bounced a logged-in browser to the login page. Reads must never lie."""
+    store.create_user("s01", "student", "h", at=T0)
+    sid = store.create_session("s01", T0, 12.0)
+    errors: list[object] = []
+    expired = [0]
+    ok = [0]
+
+    def hammer() -> None:
+        try:
+            for _ in range(300):
+                if store.get_session(sid, T1) is None:
+                    expired[0] += 1          # a valid session read as expired
+                else:
+                    ok[0] += 1
+                assert store.get_user("s01")["user_id"] == "s01"
+                store.list_users()           # a read that materializes rows
+        except Exception as exc:              # noqa: BLE001 — record, assert below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=hammer) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert not errors, f"concurrent storage raised {len(errors)}: {errors[:2]!r}"
+    assert expired[0] == 0, "a live session was read as expired under load"
+    assert ok[0] == 8 * 300
