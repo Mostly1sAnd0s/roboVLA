@@ -68,6 +68,10 @@ def test_ui_pages_wired_to_the_api(ui_env):
     assert "/sessions" in html["accounts.html"]
     # the Accounts page is where a teacher mints a student's Pi token (§9.8)
     assert "/tokens/" in html["accounts.html"]
+    # ... and where a teacher resets any account's password (§8.1): generated
+    # one-time, or an exact value ("set my own")
+    assert "/reset-password" in html["accounts.html"]
+    assert "set my own" in html["accounts.html"]
     # the endpoint board: students see per-node load and pick a queue (§7.3)
     assert "/api/nodes" in html["endpoints.html"]
     assert "/api/nodes" in html["new-run.html"]

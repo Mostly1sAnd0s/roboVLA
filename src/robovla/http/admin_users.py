@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import secrets
 
 from fastapi import APIRouter, Depends, Request
@@ -23,11 +24,13 @@ router = APIRouter(prefix="/api/admin/users", tags=["admin"])
 @router.get("")
 async def list_users(request: Request, user: dict = Depends(require_admin)) -> dict:
     s = svc(request)
+    # password_min travels with the list so the page never carries a copy of
+    # the rule that would silently rot next to PASSWORD_MIN
     return {"users": [
         {k: u[k] for k in ("user_id", "role", "active", "display_name", "email",
                            "created_at", "max_running", "max_queued",
                            "max_dataset_bytes", "max_run_min", "run_now")}
-        for u in s.storage.list_users()]}
+        for u in s.storage.list_users()], "password_min": PASSWORD_MIN}
 
 
 @router.post("")
@@ -91,17 +94,52 @@ async def patch_user(uid: str, request: Request,
     return {k: after.get(k) for k in ("user_id", "role", "active", "display_name")}
 
 
+#: Admin-set passwords are typed on a keyboard by an operator, not generated;
+#: 10 characters is the floor that keeps "123456" out of a classroom roster.
+PASSWORD_MIN = 10
+
+
 @router.post("/{uid}/reset-password")
 async def reset_password(uid: str, request: Request,
                          user: dict = Depends(require_admin)) -> dict:
-    """Out-of-band reset (§8.1): one-time password for the classroom (paper)."""
+    """Out-of-band reset (§8.1), for any account including another teacher.
+
+    No body, or no ``password`` field: a generated one-time password — the
+    classroom paper flow, returned once.
+
+    ``{"password": "..."}``: set that exact value. Bringing a seat back means
+    typing a credential you already chose, not copying a random string from one
+    device to another. A caller-supplied password is NEVER echoed back (it would
+    land in browser history and logs); only generated values are returned.
+
+    The old password stops working at this call. Existing sessions are left
+    alone — revoking them is the separate, visible action on the same panel, so
+    resetting your own password does not log you out mid-task.
+    """
     s = svc(request)
     if s.storage.get_user(uid) is None:
         raise RobovlaError("not_found", f"unknown user: {uid}")
-    password = secrets.token_urlsafe(10)
+    raw = await request.body()
+    body = json.loads(raw) if raw else {}
+    if not isinstance(body, dict):
+        raise RobovlaError("validation", "body must be an object")
+    supplied = body.get("password")
+    if supplied is None:
+        password, generated = secrets.token_urlsafe(10), True
+    else:
+        password, generated = str(supplied), False
+        if len(password) < PASSWORD_MIN:
+            raise RobovlaError("validation",
+                               f"password must be at least {PASSWORD_MIN} characters")
     s.storage.set_password_hash(uid, hash_password(password), at=s.clock())
-    s.audit(user["user_id"], "user.reset_password", uid)
-    return {"user_id": uid, "password": password, "shown_once": True}
+    # the audit row records WHO reset WHO and which flavour, never the value
+    s.audit(user["user_id"], "user.reset_password", uid, None,
+            {"generated": generated})
+    out = {"user_id": uid, "generated": generated}
+    if generated:
+        out["password"] = password
+        out["shown_once"] = True
+    return out
 
 
 @router.get("/{uid}/sessions")

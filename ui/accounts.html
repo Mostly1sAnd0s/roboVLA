@@ -38,12 +38,14 @@
 <script src="/ui/app.js"></script>
 <script>
 (async () => {
+let PW_MIN = 10;   // replaced by the server value on first load
 const user = await me();
 if (!user || user.role !== "teacher") { location.href = "/ui/index.html"; return; }
 nav("accounts.html", user);
 
 async function loadUsers() {
-  const { users } = await api("/api/admin/users");
+  const { users, password_min } = await api("/api/admin/users");
+  if (password_min) PW_MIN = password_min;   // the server owns the rule
   $("#users tbody").innerHTML = users.map(u => `<tr>
     <td class="mono">${esc(u.user_id)}</td>
     <td>${esc(u.display_name)}</td>
@@ -76,7 +78,11 @@ async function showDetail(uid) {
       <span class="muted">max_running ${u.max_running ?? "default"} ·
       max_queued ${u.max_queued ?? "default"} · run_now ${u.run_now ?? "default"}</span></div>
     <div class="row"><span class="label">password</span>
-      <button class="secondary" id="pw">reset (one-time)</button></div>
+      <button class="secondary" id="pw">reset (one-time)</button>
+      <button class="secondary" id="pwset">set my own</button></div>
+    <p class="xs muted">a reset kills the old password at once; signed-in
+      sessions are NOT touched — revoke them below if you think someone else is
+      in this account</p>
     <div class="row"><span class="label">Pi token</span>
       <button class="secondary" id="tok">generate/rotate</button>
       <button class="danger" id="tokrev">revoke</button></div>
@@ -97,8 +103,28 @@ async function showDetail(uid) {
     toast("ok"); loadUsers(); showDetail(uid);
   });
   $("#pw").addEventListener("click", async () => {
+    if (!await confirmAction({ title: `Reset ${uid}'s password?`,
+        body: "A one-time password is generated and shown once. The old password stops working immediately.",
+        okLabel: "Reset" })) return;
     const r = await api(`/api/admin/users/${uid}/reset-password`, { method: "POST" });
     out(`one-time password (shown once):\n${r.password}`);
+  });
+  // Set an exact password: bringing a seat back should not require copying a
+  // random string from this screen into the student's own login.
+  $("#pwset").addEventListener("click", async () => {
+    if (!await confirmAction({ title: `Set ${uid}'s password?`, danger: true,
+        body: "The old password stops working immediately. Signed-in sessions stay signed in.",
+        okLabel: "Choose a password" })) return;
+    const pw = await ask({ title: `New password for ${uid}`,
+        body: `at least ${PW_MIN} characters · not shown back afterwards`,
+        type: "password", trim: false, required: true, okLabel: "Set password" });
+    if (pw === null) return;
+    try {
+      const r = await api(`/api/admin/users/${uid}/reset-password`,
+                          { method: "POST", body: { password: pw } });
+      toast(`password set for ${r.user_id}`);
+      out("password set (the value is not shown back, and it is not stored in the clear)");
+    } catch (err) { toast(err.message, true); }
   });
   async function tokAct(a) {
     try {

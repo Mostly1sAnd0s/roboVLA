@@ -61,13 +61,15 @@ function esc(s) {
 
 /* Ask a question without window.prompt(): a modal <dialog> so the answer is
    styled with the rest of the console. Resolves null when dismissed. */
-function ask({ title, body = "", value = "", okLabel = "OK", required = false }) {
+function ask({ title, body = "", value = "", okLabel = "OK", required = false,
+              type = "text", trim = true }) {
   return new Promise((resolve) => {
     const d = document.createElement("dialog");
     d.innerHTML = `<form method="dialog">
       <h3>${esc(title)}</h3>
       ${body ? `<p class="small muted">${esc(body)}</p>` : ""}
-      <input class="answer" value="${esc(value)}" autofocus>
+      <input class="answer" type="${esc(type)}" value="${esc(value)}"
+             autocomplete="off" autofocus>
       <div class="btn-row end mt3">
         <button class="ghost" value="cancel" formnovalidate>Cancel</button>
         <button value="ok">${esc(okLabel)}</button>
@@ -75,7 +77,9 @@ function ask({ title, body = "", value = "", okLabel = "OK", required = false })
     document.body.append(d);
     const input = d.querySelector(".answer");
     d.addEventListener("close", () => {
-      const v = input.value.trim();
+      // trim=false: a password keeps its edge characters, or "pw " and "pw"
+      // would be the same secret and the operator would chase a ghost
+      const v = trim ? input.value.trim() : input.value;
       const ok = d.returnValue === "ok" && (!required || v);
       d.remove();
       resolve(ok ? v : null);
