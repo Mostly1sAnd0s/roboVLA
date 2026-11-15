@@ -18,7 +18,7 @@ Conventions used below:
 
 The one environment rule that has bitten twice: **every ROS command on
 the robot runs on **its seat's ROS domain** (`s01` = 99, `s02` = 100,
-`c03`… `s12` = 110).** The console assigns it; a robot reads it at bringup and
+`s03` = 101 … `s12` = 110).** The console assigns it; a robot reads it at bringup and
 your own shell must match it. Without a match everything
 "succeeds" into an empty room — the robot never hears you.
 
