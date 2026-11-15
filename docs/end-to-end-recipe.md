@@ -293,14 +293,14 @@ until it exists, stopping is physical — say so in the UI.
 
 | terminal step | API today | UI today | gap |
 |---|---|---|---|
-| record | `POST /api/robot/record` (+ `record_cmd` topic) | `drive.html` start/stop | hardware check; `record_episode_node session:=true` |
+| record | `POST /api/robot/record` (+ `record_cmd` topic) | `drive.html` start/stop | recorder proven; console-driven start/stop (`session:=true`) NOT yet run on hardware |
 | upload | `POST /api/datasets/{id}/upload` | CLI only | file picker |
 | ticket + train | `/api/tickets`, `/api/runs` | `new-run.html` | none |
 | continue LoRA | `resume_from` (openvla crash-resume only) | — | wrapper support + honest UX, see §6 |
 | serve | `/api/infer/slots/*` | claim + release buttons | none |
 | watch robot | `/api/robot/telemetry` + `/api/infer/robot-view` | Robot view page | — |
 | prompt / gain | `slots/{id}/prompt`, `/camera` | page controls | none |
-| drive | `POST /api/robot/teleop`, `/stop`, `/status` | `drive.html` (keys, gamepad, deadman, latched stop, teacher broadcast) | hardware check; see `robot-console-plan.md` |
+| drive | `POST /api/robot/teleop`, `/stop`, `/status` | `drive.html` (keys, gamepad, deadman, latched stop, teacher broadcast) | teleop + camera verified on pi3 (2026-11-14); **e-stop drill OPEN** |
 | triage | `/api/health`, run logs | nodes + run pages | none |
 
 Rules for the weave: every robot→console call stays a robot-initiated

@@ -16,7 +16,32 @@ This project fine-tunes **OpenVLA-7B** (a 7.5B vision-language-action model). It
 ## Status (2026-10-26)
 
 - **Design:** v0.5.1 is complete and frozen for implementation. It covers section 8 admin controls, section 9 API schema, section 10 portability and scalability, section 11 TDD/DRY, and Appendices A-C.
-- **Phase 0 core (done, test-first per section 11):** the package is `robovla/core`. It holds errors, states, spec (one JobSpec contract + a preset catalog), config (fleet.yaml schema + diff), budgets, norm_stats, split, qa, ticket, audit, and scheduler. It also holds the shared `robovla/episode.py`. There are 314 unit tests. Line coverage is 99% (target >= 95%). The core does no I/O. The code has no node names or IPs.
+- **Phase 0 core (done, test-first per section 11):** the package is `robovla/core`. It holds errors, states, spec (one JobSpec contract + a preset catalog), config (fleet.yaml schema + diff), budgets, norm_stats, split, qa, ticket, audit, and scheduler. It also holds the shared `robovla/episode.py`. There are 314 unit tests. Line coverage is 99% (target >= 95%). The core does no I/O. The code has no node names or IPs.- **Browser operation of the whole loop (2026-11-14):** the endpoint board
+  (`GET /api/nodes` — per-node VRAM, train/infer slots, the queue PINNED to that
+  node versus the auto jobs first-fitting across the fleet, and a wait estimate
+  for a new arrival; auto jobs are counted separately because an auto job is
+  nobody's queue until a slot frees), a design-token stylesheet and one app shell
+  across all 14 pages, and `/ui/drive.html`: keyboard + gamepad teleop, latched
+  e-stop, teacher broadcast stop, record start/stop and the per-robot config
+  editor. Terminal work left is `ssh` and `rosbot`.
+  It rides the weave rather than breaking it (the Pi still listens on nothing): a
+  browser command is a row the robot reads on its next telemetry reply, so
+  commands expire and stops latch. `core/robot_control.py` holds the ladder —
+  stop > teleop > model, expired == no command, junk degrades to no motion — and
+  the node keeps its OWN deadman (`rosbot_vla/control.py`), capped at two
+  telemetry periods so one reply can never claim human control after the console
+  disappears. Frame rate over MJPEG: the browser's picture is the telemetry
+  cadence (default 5 Hz, cap 12), because streaming from the Pi would need a
+  listening port and a console-side relay would add no frames. **The console now
+  assigns a ROS domain per seat** (s01=99 … s12=110; DDS discovery is LAN-wide,
+  so twelve robots on 99 can publish to each other's /cmd_vel — seat 01 keeps 99
+  so adoption needs no migration; a stored value pins a rig). Verified on
+  hardware the same day: teleop drove the robot, the stream reached the page, the
+  domain read returned 99 with a live token, and both fail-safe paths (no token
+  file, unreachable console) fall back clean. **Not verified: the e-stop drill
+  (spacebar, broadcast, clear, deadman with the console killed mid-drive) and
+  console-driven recording — do those before class.** Plan + decisions:
+  `docs/robot-console-plan.md`.
 - **Phase 0 seams + console (done, against `FakeRunner` on CPU):** the SQLite storage seam (WAL, sessions, shown-once tokens with O(1) lookup, 24 h idempotency, audit). The file seam (zip-slip-safe chunked uploads, 224x224 prep, agent bundles). The runner seam (protocol + `FakeRunner` scripted agent + `HttpRunner`, the single real implementation). The service orchestrator (FIFO / run-now / no-preemption scheduler over measured VRAM, budget guard at dispatch, leases, SPOF job rebuild). The full FastAPI surface of section 9 (auth + one RBAC dep, datasets, runs, tickets, SSE with Last-Event-ID resume, inference slots + the robot path, agent bundle pull, section 9.7 admin, all audited). The `ui/` surfaces of section 7 (vanilla JS + HTMX, no build step. The class reads this code). **629 tests pass in ~20 s** on CPU (`uv run pytest -m "not hardware"`). Unit tests run in < 1 s. Integration tests have a < 5 min budget. All files are <= 500 lines.
 - The last unwritten CPU surface is now covered: `tests/e2e_class/`. It is the scripted 12-student class day (the "Simulated class E2E" of design section 11). It runs over one module-scoped `ClassEnv` (console + 3 nodes, roster 12, `FakeRunner` at every node, real SQLite + real HTTP routes, frozen clock). It uses an advancing monotonic clock for the login rate-limit window. The flow: launch submits -> extended-config gating / first-fit / pinning -> FIFO drain with a mid-drain kill + a run-now bump. The dispatch-before-poll tick order creates a persistent one-tick stagger. The assertions pin that stagger. Then the demo-day 2-slot inference relay. Then a backup + restore round-trip over a fresh data dir. The SPOF rebuild seam (driven test-first) exposed a real defect. `Scheduler.add` rejects non-queued jobs. The rebuild re-added durable running/finishing rows at boot and on config reload. A console with a running job could not boot. The fix is `Scheduler.restore` (shared `_check_job(job, queued_only)`).
 - **Runner agent (done, CPU-testable):** `agent/`. It is the per-node process inside the podman runner container. It runs a FastAPI server on :8601. It uses one per-node-token auth dependency and the shared section 9.6 error shape. `/health` reports measured facts. The console decides pass/fail. The VRAM probe uses nvidia-smi/rocm-smi (pure parsers + an injectable proc seam. purge rejects non-agent pids). The job supervisor uses the shared JobSpec validator. It produces a **fixed argv** through the `proc.py` exec seam (no shell, ever). It does real subprocess supervision, dispatch-time bundle pull, SIGTERM -> grace -> SIGKILL, and a reaper. The bundle pull is the agent's only console-bound call (section 9.9: per-node token, sha256 verified, re-pulled at every dispatch). Inference slots use a model seam. The console to agent loop is proven on CPU: real console + real agent + real subprocess job. The flow: `login -> upload -> ticket -> submit -> dispatch -> queued(pull) -> running -> done`.

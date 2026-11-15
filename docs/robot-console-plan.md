@@ -6,16 +6,29 @@ train, serve, test — without a terminal. The only terminal step left is
 
 ## Status
 
-Built (2026-11-14): `core/robot_control.py` (the ladder and the config, pure
-and unit-tested), `http/robot.py` (`/api/robot/config`, `/status`, `/teleop`,
-`/stop`, `/record`), the control block on the telemetry reply, `/ui/drive.html`
-(keyboard + gamepad, deadman bar, latched e-stop, teacher broadcast, record
-start/stop, config editor), and on the robot side `rosbot_vla/control.py` plus
-the teleop/stop/record handling inside `vla_drive_node` and `record_episode_node
-(session:=true)`.
+Built (2026-11-14) and running: `core/robot_control.py` (the ladder and the
+config, pure and unit-tested), `http/robot.py` (`/api/robot/config`, `/status`,
+`/teleop`, `/stop`, `/record`), the control block on the telemetry reply,
+`/ui/drive.html` (keyboard + gamepad, deadman bar, latched e-stop, teacher
+broadcast, record start/stop, config editor). Robot side:
+`rosbot_vla/control.py`, the teleop/stop/record handling inside
+`vla_drive_node`, `record_episode_node session:=true`, and
+`rosbot_vla/console_config.py` for the bringup domain read.
 
-Not built: the Pi bringup script does not fetch `ros_domain_id` from the
-console yet (see "Bringup"), and nothing here has been driven on hardware.
+Verified on hardware the same day: browser teleop drove the robot, the camera
+stream reached the Drive page, and the domain read returned the seat's value
+(99) with a live token — plus the fail-safe cases on the Pi (no token file, and
+an unreachable console both fall back to 99, exit 0, no stall).
+
+NOT yet verified on hardware — do not treat as done:
+
+* the **e-stop drill**: spacebar latch, teacher broadcast, clear, and the
+  robot-side deadman with the console killed mid-drive;
+* `record_episode_node session:=true` driven from the browser (the recorder
+  itself has recorded real episodes; the console-driven start/stop has not);
+* a second robot on a second domain, which is what makes per-seat assignment
+  more than a rule on paper.
+
 Tests: roboVLA `tests/unit/test_robot_control.py`,
 `tests/integration/test_robot_ops.py`; rosBot `test/test_control.py`,
 `test/test_modules.py`.
@@ -33,12 +46,7 @@ Tests: roboVLA `tests/unit/test_robot_control.py`,
 Consequence: browser control latency equals the telemetry poll interval, and
 every command needs an expiry so a dead browser cannot leave the robot moving.
 
-Robot-side items below are proposals against the rosBot tree as read on
-2026-11-14 (`vla_drive_node` takes `console_url`, `token_file`, `prompt`,
-`rate_hz`, `dry_run`, `gain`, `exposure` as ROS params, set by `robot_up.sh`).
-Confirm each against the node before implementing.
-
-## Robot-side work (rosBot package)
+## Robot-side work (rosBot package) — as built
 
 ### Domain per seat (built)
 
@@ -54,30 +62,6 @@ which is how a multi-robot lesson or a lab with its own AP pins a rig.
 exits 0 with the fallback, and can only ever emit digits. A human shell needs the
 same number, so derive it the same way instead of typing 99 — a mismatch is the
 documented silent-empty-room failure.
-
-### Bringup (open)
-
-`ROS_DOMAIN_ID` is set in the environment before ROS starts, so the console
-cannot change it for a running node. The Pi script has to ask first:
-
-```sh
-# ~/rosbot_ws/tools/robot_up.sh, before any ros2 run
-DOM=$(.venv/bin/python -c 'from rosbot_vla.client import ConsoleClient as C;
-     print(C(open("'$CONSOLE_URL'"), open("'$TOKEN_FILE'").read().strip()).config()
-         .get("ros_domain_id", 99))')
-export ROS_DOMAIN_ID=${DOM:-99}
-```
-
-The node reads the same endpoint for its own rates and deadman. Until that line
-lands, the UI's domain-ID field changes the stored config only, and `robot_up.sh`
-keeps using its own `ROS_DOMAIN_ID=99`. **Do not claim otherwise in the UI.**
-- `vla_drive_node` gains three subscriptions it acts on locally:
-  `cmd_vel_teleop` ( Twist from the console channel, watchdog `deadman_s`),
-  `record/start`, `record/stop`, and `estop` (latched, zero velocity, wins over
-  everything, cleared only by a second explicit clear).
-- The teleop watchdog lives on the robot, not in the console: if no teleop
-  command arrives within `deadman_s`, the node stops publishing and zeroes
-  velocity. Same for a telemetry POST that fails.
 
 ## Console-side work
 
@@ -114,14 +98,17 @@ keeps using its own `ROS_DOMAIN_ID=99`. **Do not claim otherwise in the UI.**
   is killed mid-drive; a latched e-stop survives a policy that keeps asking for
   forward motion; recorded episodes reach the console through the UI upload.
 
-## Open questions for the teacher
+## Decisions taken (2026-11-14)
 
-1. Teleop transport on the LAN: keep the console as the only path (one channel,
-   logged, but 1–3 fps video and poll-interval latency), or let the browser talk
-   to the Pi directly for the drive session (lower latency, breaks invariant 1,
-   unlogged)?
-2. Camera for driving: raise the telemetry frame rate during a drive session, or
-   let the Pi stream MJPEG to the browser directly (LAN-only, again outside
-   invariant 1)?
-3. Who may e-stop: owning student only, any student, or does the teacher's
-   broadcast stop win?
+1. **Drive path: through the console.** The invariant holds — the Pi runs no
+   server and listens on no port. Cost accepted: command latency equals the
+   telemetry poll, and the browser's picture arrives at that same cadence.
+2. **Frame rate over MJPEG.** Raising the telemetry rate (default 5 Hz, cap 12)
+   gives a driveable view without a new channel. Streaming from the Pi would
+   have meant a listening port and no logging; a console-side relay would add no
+   frames per second, since the rate is set by how often the robot posts.
+   Revisit only with measurements, not impressions.
+3. **Stop authority: teacher broadcast always wins**, students get spacebar on
+   their own robot. The node ladder is stop > teleop > model, the stop is
+   repeated on every reply until explicitly cleared, and the robot's own deadman
+   zeroes velocity if commands stop arriving. Hardware e-stop remains final.
