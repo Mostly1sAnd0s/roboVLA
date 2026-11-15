@@ -60,7 +60,10 @@ async function loadUsers() {
 }
 
 async function showDetail(uid) {
-  const [{ users }, { sessions }] = await Promise.all([
+  // /sessions returns a body with a list inside it. Bind the BODY as `sess` and
+  // read `sess.sessions` once: destructuring the list out and then indexing it
+  // again reads undefined.length, which is why Manage used to do nothing.
+  const [{ users }, sess] = await Promise.all([
     api("/api/admin/users"), api(`/api/admin/users/${uid}/sessions`),
   ]);
   const u = users.find(x => x.user_id === uid);
@@ -77,10 +80,10 @@ async function showDetail(uid) {
     <div class="row"><span class="label">Pi token</span>
       <button class="secondary" id="tok">generate/rotate</button>
       <button class="danger" id="tokrev">revoke</button></div>
-    <p class="muted" style="margin-top:10px">sessions (${sessions.sessions.length}):</p>
+    <p class="muted" style="margin-top:10px">sessions (${sess.sessions.length}):</p>
     <div id="sess"></div>
     <pre id="dout" class="log" style="display:none"></pre>`;
-  $("#sess").innerHTML = sessions.sessions.map(s =>
+  $("#sess").innerHTML = sess.sessions.map(s =>
     `<div class="row"><span class="mono small">${esc(s.session_id)}</span>
      <span class="muted small">expires ${fmtTs(s.expires_at)}</span>
      <button class="danger small" data-sid="${esc(s.session_id)}">revoke</button></div>`).join("")

@@ -61,6 +61,13 @@ def test_ui_pages_wired_to_the_api(ui_env):
     assert "/api/admin/nodes" in html["teacher.html"]
     assert "/api/admin/audit" in html["teacher.html"]
     assert "/api/admin/users" in html["accounts.html"]
+    # regression: the sessions panel unwrapped the response twice
+    # (`const [{users}, {sessions}]` then `sessions.sessions`), so Manage threw
+    # on undefined.length and the panel never opened. Bind the body, read once.
+    assert "sessions.sessions" not in html["accounts.html"]
+    assert "/sessions" in html["accounts.html"]
+    # the Accounts page is where a teacher mints a student's Pi token (§9.8)
+    assert "/tokens/" in html["accounts.html"]
     # the endpoint board: students see per-node load and pick a queue (§7.3)
     assert "/api/nodes" in html["endpoints.html"]
     assert "/api/nodes" in html["new-run.html"]
